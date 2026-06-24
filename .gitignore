@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pdm-build/
+.pdm-python
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Test / tooling caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ezTrack analysis outputs written next to videos
+*_LocationOutput.csv
+*_SummaryStats.csv
+BatchSummary.csv
+video_output.avi
+
+# OS
+.DS_Store
+Thumbs.db

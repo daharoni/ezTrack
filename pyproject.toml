@@ -1,0 +1,111 @@
+[project]
+name = "eztrack"
+version = "1.0.0"
+description = "Open-source video analysis pipeline for tracking the location of an animal in behavior recordings (e.g. open field)."
+authors = [
+    {name = "Denise Cai Lab", email = "denisecailab@gmail.com"},
+]
+dependencies = [
+    "numpy>=1.20.2",
+    "scipy>=1.4.1",
+    "pandas>=1.2.3",
+    "opencv-python-headless>=4.2.0.34",
+    "holoviews>=1.12.7",
+    "bokeh>=1.4.0",
+    "matplotlib",
+    "pillow",
+    "tqdm",
+    "jupyter",
+]
+
+requires-python = ">=3.10"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+keywords = [
+    "behavior",
+    "neuroscience",
+    "animal-tracking",
+    "open-field",
+    "video-analysis",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+
+[project.urls]
+Homepage = "https://github.com/denisecailab/ezTrack"
+Repository = "https://github.com/denisecailab/ezTrack"
+Issues = "https://github.com/denisecailab/ezTrack/issues"
+
+[project.scripts]
+eztrack = "eztrack.cli:main"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pdm]
+distribution = true
+
+[tool.pdm.build]
+# pdm-backend auto-detects the `eztrack` package and ships every file under it,
+# including the bundled notebooks. Keep build junk out of the wheel.
+excludes = [
+    "**/__pycache__",
+    "**/*.pyc",
+    "**/.ipynb_checkpoints",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+include = ["eztrack/**/*.py", "tests/**/*.py", "**/pyproject.toml"]
+
+[tool.ruff.lint]
+fixable = ["ALL"]
+# Scientific port: keep the high-signal rule families (real bugs, imports,
+# modern syntax) and defer the heavy annotation/docstring/security families
+# (ANN, D, S) for a later pass over the ported `location.py`.
+select = [
+    "E",   # pycodestyle
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # bugbear
+    "C4",  # comprehensions
+    "SIM", # simplify
+]
+[tool.ruff.lint.per-file-ignores]
+# `location.py` is a verbatim port of the legacy module. These relaxations are
+# scoped to it so the new hand-written CLI/test code stays held to the full bar.
+"eztrack/location.py" = [
+    "E722",  # bare `except:` in the original interactive helpers
+    "E741",  # ambiguous names (l, O, I) in the ported numeric code
+    "E501",  # large legacy docstring blocks; reflowing prose is out of scope
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["eztrack"]
+
+[tool.pytest.ini_options]
+addopts = ["-v", "--color=yes", "-m", "not slow"]
+testpaths = ["tests"]
+markers = [
+    "slow: full-clip end-to-end runs (deselect with '-m \"not slow\"')",
+]

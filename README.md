@@ -3,33 +3,90 @@
 </p>
 
 # Behavior Tracking with ezTrack
-This page hosts iPython files that can be used to track the location, motion, and freezing of an animal. For the sake of clarity, these processes are described as two modules: one for tracking an animal's location; the other  for the analysis of freezing.  **If you are unfamiliar with how to use iPython/Jupyter Notebook, please see [Getting Started](https://github.com/DeniseCaiLab/GettingStarted)**.
+ezTrack tracks the location of a single animal across a behavior video on a frame-by-frame
+basis (for example, in an open field), quantifies distance travelled and time spent in
+user-defined regions of interest, and renders motion traces and occupancy heatmaps. The
+workflow is driven from Jupyter notebooks.
+
+This repository has been modernized to install and run as a standard Python package on
+current scientific Python (Python ≥ 3.10, NumPy/SciPy/pandas/OpenCV/HoloViews), so it can be
+used in a shared virtual environment alongside [minian](https://github.com/miniscope/minian).
+
+> **Scope note:** This package currently ships the **Location Tracking** module. The legacy
+> **Freeze Analysis** module remains in `FreezeAnalysis/` as unmodernized source and is not
+> part of the installable package.
 
 ![Examples](../master/Images/Examples.gif)
 
-# Please cite ezTrack if you use it in your research:
-Pennington ZT, Dong Z, Feng Y, Vetere LM, Page-Harley L, Shuman T, Cai DJ (2019). ezTrack: An open-source video analysis pipeline for the investigation of animal behavior. Scientific Reports: 9(1): 19979
+# Installation
 
+Use a virtual environment (recommended), then install:
 
-# Check out the ezTrack wiki
-For instructions on installation and use, go [here](https://github.com/denisecailab/ezTrack/wiki).
+```bash
+python -m venv .venv
+# Windows:  .venv\Scripts\activate
+# macOS/Linux:  source .venv/bin/activate
 
-# New Feature Alerts:
-- 04/11/2021: ezTrack now has **algorithm for removing wires** in the location tracking module.
-- 07/20/2020: ezTrack now supports **spatial downsampling** of videos!  You can reduce the resolution of the video to greatly speed processing. Processing high-definition videos on older laptops/desktops can be slow, but by downsampling, processing speeds are much faster.
-- 07/19/2020: Location tracking module now allows user to **manually define frame numbers to be used when selecting reference**.  This is useful if baseline portion of video without animal will be used for reference, and resolves issue when alternative video being used for reference is a different length than the video being processed.
-- 06/16/2020:  Location tracking module **now allows user to define regions of frame that they would like excluded from the analysis**.  This is useful in situations where an extraneous object enters into periphery, or even center, of the field of view.
+# from a clone of this repo (editable, for teaching/development):
+pip install -e .
 
+# or build/install the package:
+pip install .
+```
+
+OpenCV is installed as `opencv-python-headless` (no GUI windows), matching minian. The
+notebook plays tracking video inline via `PlayVideo`; the external-window `PlayVideo_ext`
+requires a GUI build of OpenCV and is disabled under the headless install.
+
+# Running the notebooks
+
+The analysis notebooks are bundled inside the package. Copy one into a working directory
+with the CLI:
+
+```bash
+eztrack notebooks list                 # show available notebooks
+eztrack notebooks copy individual      # single-video tracking notebook
+eztrack notebooks copy batch           # batch-processing notebook
+```
+
+Then launch Jupyter and open the copied notebook:
+
+```bash
+jupyter notebook
+```
+
+If you cloned the repo, you can also open the notebooks in place under
+`eztrack/notebooks/`. The `individual` notebook defaults to the sample clip in
+`PracticeVideos/`; for your own data, edit the `video_dict` `dpath`/`file` entries.
 
 # Location Tracking Module
-The location tracking module allows for the analysis of a single animal's location on a frame by frame basis.  In addition to providing the user the with the ability to crop the portion of the video frame in which the animal will be, it also allows the user to specify regions of interest (e.g. left and right sides) and provides tools to quantify the time spent in each region, as well as distance travelled.  
+The location tracking module analyzes a single animal's location frame by frame. It lets
+you crop the video frame, exclude regions from analysis, specify regions of interest (e.g.
+left/right), quantify time spent in each region and distance travelled, and define a
+real-world scale.
+
 ![schematic_lt](../master/Images/LocationTracking_Schematic.png)
 
+# What was modernized
+- Added packaging (`pyproject.toml`, PDM backend), a console entry point (`eztrack`), and a
+  bundled-notebook CLI — mirroring minian's conventions.
+- Fixed deprecated/broken APIs for the modern stack: HoloViews `hv.extension`, SciPy
+  `ndimage.center_of_mass`, pandas Copy-on-Write-safe ROI labelling/transition logic,
+  OpenCV `int32` polygon points and keyword `interpolation=` on `cv2.resize`.
+- Removed the blanket `warnings.filterwarnings("ignore")`.
 
-# Freeze Analysis Module
-The freeze analysis module allows the user to automatically score an animal's motion and freezing while in a conditioning chamber.  It was designed with side-view recording in mind, and with the intention of being able to crop the top of a video frame to remove the influence of fiberoptic/miniscope cables.  In the case where no cables are to be used, recording should be capable from above the animal.  
-![schematic_fz](../master/Images/FreezeAnalysis_Schematic.png)
+The package version is a static `1.0.0` for this first PyPI-ready cut; SCM-based versioning
+(as minian uses) can be adopted later.
 
+# Citation
+Please cite ezTrack if you use it in your research:
+
+> Pennington ZT, Dong Z, Feng Y, Vetere LM, Page-Harley L, Shuman T, Cai DJ (2019). ezTrack:
+> An open-source video analysis pipeline for the investigation of animal behavior.
+> *Scientific Reports* 9(1): 19979.
+
+For the original instructions and background, see the
+[ezTrack wiki](https://github.com/denisecailab/ezTrack/wiki).
 
 # License
 This project is licensed under GNU GPLv3.
