@@ -1,70 +1,104 @@
-"""ezTrack: open-source video analysis for animal behavior.
+"""ezTrack: open-source video analysis for animal location tracking.
 
-This package ships the **LocationTracking** module, which tracks a single
-animal's location frame-by-frame (e.g. in an open field), quantifies distance
-travelled and time spent in user-defined regions of interest, and renders
-traces and heatmaps.
+Tracks a single animal's location frame-by-frame in a behavior video (e.g. an
+open field), quantifies distance travelled and time spent in user-defined
+regions, and renders motion traces and occupancy heatmaps.
 
-The analysis functions live in :mod:`eztrack.location`; the interactive
-workflow is driven from the bundled Jupyter notebooks, which you can copy into a
-working directory with the CLI::
+The pipeline is a handful of explicit steps over a :class:`Session`::
 
-    eztrack notebooks list
-    eztrack notebooks copy individual
+    import eztrack as ez
+
+    session = ez.Session(dpath="videos", file="clip.mp4", region_names=["left", "right"])
+    ez.crop_tool(session)                 # draw a crop box (or set session.selections.crop)
+    ez.reference_frame(session)           # build the background frame
+    ez.roi_tool(session)                  # draw the named regions
+    df = ez.track(session, ez.TrackParams(method="dark"))
+    summary = ez.summarize(df, session)
+
+Selections (crop, mask, ROIs, scale) are plain serializable objects: draw them
+once, ``session.selections.save("sel.json")``, and replay headlessly with
+``session.selections = ez.Selections.load("sel.json")``.
+
+Config objects (:class:`Session`, :class:`Selections`, :class:`TrackParams`, ...)
+import without OpenCV/HoloViews; the heavier pipeline functions are imported
+lazily so the ``eztrack notebooks`` CLI stays light.
 """
 
 from importlib.metadata import PackageNotFoundError, version
-from typing import TYPE_CHECKING
+
+# Lightweight, dependency-free config objects -- safe to import eagerly.
+from .config import (
+    Crop,
+    Mask,
+    PlayParams,
+    ROIs,
+    Scale,
+    Selections,
+    Session,
+    Stretch,
+    TrackParams,
+    Window,
+)
 
 try:
     __version__ = version("eztrack")
-except PackageNotFoundError:  # not installed (e.g. running from a source checkout)
+except PackageNotFoundError:  # running from a source checkout
     __version__ = "0.0.0"
 
-# Public API re-exported lazily from eztrack.location so that lightweight uses
-# (e.g. the `eztrack notebooks` CLI) don't pull in holoviews/opencv just to
-# import the package. `from eztrack import Session` triggers the import on first
-# access via __getattr__ below.
+# Heavier functions (pull in OpenCV/HoloViews) are resolved lazily on first access.
 _LAZY = {
-    "Session",
-    "TrackingParams",
-    "DisplayParams",
-    "Scale",
-    "Stretch",
-    "Mask",
-    "load_and_crop",
-    "make_reference",
-    "crop_frame",
-    "batch_load_files",
-    "check_p_frames",
-    "locate",
-    "track_location",
-    "roi_plot",
-    "roi_location",
-    "roi_linearize",
-    "roi_transitions",
-    "mask_select",
-    "distance_tool",
-    "set_scale",
-    "scale_distance",
-    "summarize_location",
-    "location_thresh_view",
-    "show_trace",
-    "heatmap",
-    "play_video",
-    "play_video_ext",
-    "batch_process",
+    # video
+    "reference_frame": "video",
+    "discover_files": "video",
+    "check_decodable": "video",
+    "preprocess": "video",
+    # tracking
+    "track": "tracking",
+    "locate": "tracking",
+    # analyze
+    "summarize": "analyze",
+    "apply_scale": "analyze",
+    # regions
+    "roi_membership": "regions",
+    "mask_array": "regions",
+    # interactive
+    "crop_tool": "interactive",
+    "mask_tool": "interactive",
+    "roi_tool": "interactive",
+    "distance_tool": "interactive",
+    "set_scale": "interactive",
+    # viz
+    "image": "viz",
+    "trace": "viz",
+    "heatmap": "viz",
+    "threshold_preview": "viz",
+    # playback
+    "play_inline": "playback",
+    "play_window": "playback",
+    # batch
+    "batch_process": "batch",
 }
 
-__all__ = ["__version__", *sorted(_LAZY)]
-
-if TYPE_CHECKING:  # let type checkers/IDEs resolve the lazy names
-    from .location import *  # noqa: F403
+__all__ = [
+    "__version__",
+    "Session",
+    "Selections",
+    "Crop",
+    "Mask",
+    "ROIs",
+    "Scale",
+    "Window",
+    "Stretch",
+    "TrackParams",
+    "PlayParams",
+    *sorted(_LAZY),
+]
 
 
 def __getattr__(name: str):
-    if name in _LAZY:
-        from . import location
+    module = _LAZY.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
 
-        return getattr(location, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(importlib.import_module(f".{module}", __name__), name)

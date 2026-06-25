@@ -1,0 +1,11 @@
+# Run `pre-commit install` once to enable these hooks locally.
+# Outputs are stripped from the bundled notebooks so diffs stay reviewable and
+# the repo never carries stale execution results. CI enforces the same check.
+# Scoped to the shipped notebooks; the legacy FreezeAnalysis/ notebooks are
+# unmodernized and intentionally left untouched.
+repos:
+  - repo: https://github.com/kynan/nbstripout
+    rev: "0.8.1"
+    hooks:
+      - id: nbstripout
+        files: '^eztrack/notebooks/.*\.ipynb$'

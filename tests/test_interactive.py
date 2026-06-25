@@ -1,0 +1,45 @@
+"""Smoke tests for the interactive widget builders.
+
+The live drawing can't be driven headlessly, but the builders must at least
+construct a HoloViews element without error (and the coordinate-conversion logic
+they rely on is unit-tested in test_config.py). This guards against the widget
+wiring breaking when the core API changes.
+"""
+
+from __future__ import annotations
+
+import eztrack as ez
+
+
+def _is_hv_element(obj) -> bool:
+    return hasattr(obj, "opts")  # all HoloViews elements/overlays expose .opts
+
+
+def _session(synthetic_video, **kw):
+    return ez.Session(dpath=str(synthetic_video.parent), file=synthetic_video.name, **kw)
+
+
+def test_crop_and_mask_tools_build(synthetic_video):
+    session = _session(synthetic_video)
+    assert _is_hv_element(ez.crop_tool(session))
+    assert _is_hv_element(ez.mask_tool(session))
+
+
+def test_roi_tool_with_and_without_regions(synthetic_video):
+    with_regions = _session(synthetic_video, region_names=["left", "right"])
+    ez.reference_frame(with_regions, num_frames=20)
+    assert _is_hv_element(ez.roi_tool(with_regions))
+
+    no_regions = _session(synthetic_video)
+    ez.reference_frame(no_regions, num_frames=20)
+    assert _is_hv_element(ez.roi_tool(no_regions))
+
+
+def test_distance_tool_and_set_scale(synthetic_video):
+    session = _session(synthetic_video)
+    ez.reference_frame(session, num_frames=20)
+    assert _is_hv_element(ez.distance_tool(session))
+
+    ez.set_scale(session, real_distance=50, unit="cm")
+    assert session.selections.scale.real_distance == 50
+    assert session.selections.scale.unit == "cm"

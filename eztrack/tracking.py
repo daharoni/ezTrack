@@ -1,146 +1,172 @@
-"""Frame-by-frame location tracking: per-frame center-of-mass and the full session loop."""
+"""The tracking core: estimate the animal's location per frame, build the track.
+
+Algorithm (unchanged in spirit from the original ezTrack): difference each frame
+from the reference, optionally bias toward the previous location, threshold to the
+brightest ``threshold_pct`` of differences, and take the center of mass of what
+remains. Pure with respect to HoloViews -- it only touches OpenCV/NumPy/pandas and
+the plain config objects, so the whole pipeline runs and is tested headlessly.
+"""
 
 from __future__ import annotations
 
-import time
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
 import pandas as pd
 from scipy import ndimage
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
-from .config import Session, TrackingParams
-from .io import _preprocess_frame
-from .roi import roi_linearize, roi_location, roi_transitions
-from .scale import scale_distance
+from .analyze import apply_scale
+from .config import Session, TrackParams
+from .regions import linearize, mask_array, roi_membership, transitions
+from .video import open_capture, preprocess
 
-__all__ = ["locate", "track_location"]
+__all__ = ["Located", "locate", "track"]
 
 
-def locate(cap, params: TrackingParams, session: Session, prior=None):
-    """Locate the animal in the next frame of ``cap`` as a center-of-mass (y, x).
+@dataclass
+class Located:
+    """Result of locating the animal in a single frame."""
 
-    Returns ``(ret, dif, com, frame)`` where ``dif`` is the thresholded
-    difference image and ``com`` the center of mass. ``prior`` is the previous
-    ``[y, x]`` used for windowed weighting when ``params.use_window``.
+    x: float
+    y: float
+    detected: bool
+    dif: np.ndarray  # thresholded difference image (for previews)
+
+
+def locate(
+    frame: np.ndarray,
+    reference: np.ndarray,
+    params: TrackParams,
+    prior: tuple[float, float] | None = None,
+    mask: np.ndarray | None = None,
+) -> Located:
+    """Locate the animal in a single preprocessed frame.
+
+    ``frame`` and ``reference`` must already be grayscale/cropped to the same
+    shape. ``prior`` is the previous ``(x, y)`` used for windowed weighting;
+    ``mask`` is a boolean exclusion array. When nothing rises above threshold the
+    animal is "not detected": the prior location is reused (or the frame center
+    on the first frame) and ``detected`` is False.
     """
-    ret, frame = cap.read()
-
-    if prior is not None and params.use_window:
-        window_size = params.window_size // 2
-        ymin, ymax = prior[0] - window_size, prior[0] + window_size
-        xmin, xmax = prior[1] - window_size, prior[1] + window_size
-
-    if not ret:
-        return ret, None, None, frame
-
-    frame = _preprocess_frame(frame, session)
-
-    # find difference from reference
     if params.method == "abs":
-        dif = np.absolute(frame - session.reference)
+        dif = np.abs(frame.astype(np.int16) - reference.astype(np.int16))
     elif params.method == "light":
-        dif = frame - session.reference
-    elif params.method == "dark":
-        dif = session.reference - frame
-    dif = dif.astype("int16")
-    if session.mask is not None and session.mask.array is not None:
-        dif[session.mask.array] = 0
+        dif = frame.astype(np.int16) - reference.astype(np.int16)
+    else:  # "dark" -- validated in TrackParams
+        dif = reference.astype(np.int16) - frame.astype(np.int16)
 
-    # apply window
-    weight = 1 - params.window_weight
-    if prior is not None and params.use_window:
-        dif = dif + (dif.min() * -1)  # scale so lowest value is 0
-        dif_weights = np.ones(dif.shape) * weight
-        dif_weights[slice(ymin if ymin > 0 else 0, ymax), slice(xmin if xmin > 0 else 0, xmax)] = 1
-        dif = dif * dif_weights
+    if mask is not None:
+        dif[mask] = 0
 
-    # threshold differences and find center of mass for remaining values
-    dif[dif < np.percentile(dif, params.loc_thresh)] = 0
+    if prior is not None and params.window is not None:
+        dif = _apply_window(dif, prior, params.window)
 
-    # remove influence of wire
-    if params.rmv_wire:
-        ksize = params.wire_krn
-        kernel = np.ones((ksize, ksize), np.uint8)
-        dif_wirermv = cv2.morphologyEx(dif, cv2.MORPH_OPEN, kernel)
-        krn_violation = dif_wirermv.sum() == 0
-        dif = dif if krn_violation else dif_wirermv
-        if krn_violation:
-            frm = int(cap.get(cv2.CAP_PROP_POS_FRAMES) - 1 - session.start)
-            print(f"WARNING: wire_krn too large. Reverting to rmv_wire=False for frame {frm}")
+    dif = np.where(dif < np.percentile(dif, params.threshold_pct), 0, dif)
 
-    com = ndimage.center_of_mass(dif)
-    return ret, dif, com, frame
+    if params.remove_wire:
+        dif = _remove_wire(dif, params.wire_kernel)
+
+    if dif.max() <= 0:  # nothing detected this frame
+        h, w = frame.shape
+        x, y = prior if prior is not None else (w / 2, h / 2)
+        return Located(x=float(x), y=float(y), detected=False, dif=dif)
+
+    cy, cx = ndimage.center_of_mass(dif)
+    return Located(x=float(cx), y=float(cy), detected=True, dif=dif)
 
 
-def track_location(session: Session, params: TrackingParams) -> pd.DataFrame:
+def _apply_window(dif: np.ndarray, prior: tuple[float, float], window) -> np.ndarray:
+    """Down-weight differences far from ``prior`` so distractors don't grab the COM."""
+    half = window.size // 2
+    px, py = int(round(prior[0])), int(round(prior[1]))
+    dif = dif + (-dif.min())  # shift so the lowest value is 0 before scaling
+    weights = np.full(dif.shape, 1 - window.weight)
+    weights[max(py - half, 0) : py + half, max(px - half, 0) : px + half] = 1
+    return dif * weights
+
+
+def _remove_wire(dif: np.ndarray, kernel: int) -> np.ndarray:
+    """Morphological open to drop a thin (e.g. headstage-wire) signal; revert if it nukes all."""
+    krn = np.ones((kernel, kernel), np.uint8)
+    opened = cv2.morphologyEx(dif.astype(np.int16), cv2.MORPH_OPEN, krn)
+    return dif if opened.sum() == 0 else opened
+
+
+def track(session: Session, params: TrackParams, progress: bool = True) -> pd.DataFrame:
     """Track the animal across the session and return a per-frame dataframe.
 
-    Columns: video/parameter metadata, ``Frame``, ``X``, ``Y``,
-    ``Distance_px`` (plus ROI membership/labels/transitions and a scaled
-    distance column when those are configured on ``session``).
+    Columns: ``frame`` (absolute video frame number), ``x``, ``y``, ``detected``,
+    ``distance_px`` (and a scaled ``distance_<unit>`` when a scale is set), plus
+    one boolean column per ROI, an ``roi`` label, and an ``roi_transition`` flag
+    when ROIs are present. Run parameters live in ``df.attrs``, not in every row.
     """
-    cap = cv2.VideoCapture(session.fpath)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, session.start)
-    cap_max = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap_max = int(session.end) if session.end is not None else cap_max
+    if session.reference is None:
+        raise ValueError("No reference frame. Call eztrack.reference_frame(session) first.")
 
-    x = np.zeros(cap_max - session.start)
-    y = np.zeros(cap_max - session.start)
-    d = np.zeros(cap_max - session.start)
+    cap = open_capture(session.fpath)
+    try:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, session.start)
+        cap_max = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        end = int(session.end) if session.end is not None else cap_max
+        n = end - session.start
 
-    time.sleep(0.2)  # allow printing
-    for f in tqdm(range(len(d))):
-        if f > 0:
-            yprior = np.around(y[f - 1]).astype(int)
-            xprior = np.around(x[f - 1]).astype(int)
-            ret, _dif, com, _frame = locate(cap, params, session, prior=[yprior, xprior])
-        else:
-            ret, _dif, com, _frame = locate(cap, params, session)
+        mask = mask_array(session.selections.mask, session.reference.shape)
 
-        if ret:
-            y[f] = com[0]
-            x[f] = com[1]
-            if f > 0:
-                d[f] = np.sqrt((y[f] - y[f - 1]) ** 2 + (x[f] - x[f - 1]) ** 2)
-        else:
-            # no frame detected: truncate to the frames we actually processed
-            f = f - 1
-            x = x[:f]
-            y = y[:f]
-            d = d[:f]
-            break
+        xs, ys, detected = np.zeros(n), np.zeros(n), np.zeros(n, dtype=bool)
+        prior: tuple[float, float] | None = None
+        processed = 0
+        for i in tqdm(range(n), disable=not progress, desc="tracking"):
+            ret, frame = cap.read()
+            if not ret:
+                break
+            loc = locate(preprocess(frame, session), session.reference, params, prior, mask)
+            xs[i], ys[i], detected[i] = loc.x, loc.y, loc.detected
+            prior = (loc.x, loc.y)
+            processed += 1
+    finally:
+        cap.release()
 
-    cap.release()
-    time.sleep(0.2)  # allow printing
-    print(f"total frames processed: {len(d)}\n")
+    xs, ys, detected = xs[:processed], ys[:processed], detected[:processed]
+    dist = np.zeros(processed)
+    if processed > 1:
+        dist[1:] = np.hypot(np.diff(xs), np.diff(ys))
 
     df = pd.DataFrame(
         {
-            "File": session.file,
-            "Location_Thresh": np.ones(len(d)) * params.loc_thresh,
-            "Use_Window": str(params.use_window),
-            "Window_Weight": np.ones(len(d)) * params.window_weight,
-            "Window_Size": np.ones(len(d)) * params.window_size,
-            "Start_Frame": np.ones(len(d)) * session.start,
-            "Frame": np.arange(len(d)),
-            "X": x,
-            "Y": y,
-            "Distance_px": d,
+            "frame": np.arange(session.start, session.start + processed),
+            "x": xs,
+            "y": ys,
+            "detected": detected,
+            "distance_px": dist,
         }
     )
+    df.attrs.update(
+        file=session.file,
+        start=session.start,
+        threshold_pct=params.threshold_pct,
+        method=params.method,
+        window=None
+        if params.window is None
+        else {"size": params.window.size, "weight": params.window.weight},
+    )
 
-    df = roi_location(session, df)
-    drawn_regions = [r for r in (session.region_names or []) if r in df.columns]
-    if session.region_names and not drawn_regions:
-        print(
-            "WARNING: region_names is set but no regions were drawn, so ROI analysis is "
-            "skipped. Draw regions in the ROI step, or set region_names=None to silence this."
-        )
-    if drawn_regions:
-        print("Defining transitions...")
-        df["ROI_location"] = roi_linearize(df[drawn_regions])
-        df["ROI_transition"] = roi_transitions(df["ROI_location"])
+    df = _add_rois(df, session)
+    return apply_scale(df, session.selections.scale, "distance_px")
 
-    return scale_distance(session, df=df, column="Distance_px")
+
+def _add_rois(df: pd.DataFrame, session: Session) -> pd.DataFrame:
+    """Attach per-ROI membership columns, the linearized label, and transitions."""
+    rois = session.selections.rois
+    membership = roi_membership(
+        rois, df["x"].to_numpy(), df["y"].to_numpy(), session.reference.shape
+    )
+    if not membership:
+        return df
+    for name, inside in membership.items():
+        df[name] = inside
+    df["roi"] = linearize(df[list(membership)])
+    df["roi_transition"] = transitions(df["roi"])
+    df.attrs["roi_coordinates"] = {"names": rois.names, "polygons": rois.polygons}
+    return df

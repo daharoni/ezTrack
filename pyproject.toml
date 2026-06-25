@@ -1,6 +1,6 @@
 [project]
 name = "eztrack"
-version = "1.0.0"
+version = "2.0.0"
 description = "Open-source video analysis pipeline for tracking the location of an animal in behavior recordings (e.g. open field)."
 authors = [
     {name = "Denise Cai Lab", email = "denisecailab@gmail.com"},
@@ -57,6 +57,7 @@ eztrack = "eztrack.cli:main"
 [project.optional-dependencies]
 test = [
     "pytest>=8.0",
+    "pytest-cov>=5.0",
     "ruff>=0.6",
 ]
 
@@ -66,6 +67,16 @@ build-backend = "pdm.backend"
 
 [tool.pdm]
 distribution = true
+
+[tool.pdm.scripts]
+# The `not slow` default lives in pytest config (addopts) so a bare
+# `pytest` behaves exactly like `pdm run test`. `test-all` clears the marker
+# filter to also run the slow full-clip end-to-end run; CI uses it everywhere.
+test = "pytest"
+test-all = "pytest -m ''"
+lint.composite = ["ruff check", "ruff format --check"]
+lint-fix = "ruff check --fix"
+format = "ruff format"
 
 [tool.pdm.build]
 # pdm-backend auto-detects the `eztrack` package and ships every file under it,
@@ -99,8 +110,13 @@ select = [
 known-first-party = ["eztrack"]
 
 [tool.pytest.ini_options]
-addopts = ["-v", "--color=yes", "-m", "not slow"]
+addopts = ["-v", "--color=yes", "-m", "not slow", "--cov=eztrack", "--cov-report="]
 testpaths = ["tests"]
 markers = [
     "slow: full-clip end-to-end runs (deselect with '-m \"not slow\"')",
 ]
+
+[tool.coverage.run]
+source = ["eztrack"]
+# Notebooks ship as data; the argparse CLI is plumbing exercised by hand.
+omit = ["eztrack/notebooks/*", "eztrack/cli/*"]
