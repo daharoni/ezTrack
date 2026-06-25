@@ -67,6 +67,26 @@ real-world scale.
 
 ![schematic_lt](../master/Images/LocationTracking_Schematic.png)
 
+## API at a glance
+Configuration uses typed dataclasses (`Session`, `TrackingParams`, `DisplayParams`,
+`Scale`, `Stretch`, `Mask`) instead of plain dictionaries. Pipeline functions take a
+`Session` and mutate it in place as the analysis progresses:
+
+```python
+import eztrack.location as lt
+
+session = lt.Session(dpath="videos", file="clip.mp4", region_names=["left", "right"])
+lt.load_and_crop(session, cropmethod="Box")   # sets session.crop
+lt.make_reference(session, num_frames=50)      # sets session.reference
+lt.roi_plot(session)                           # sets session.roi_stream
+location = lt.track_location(session, lt.TrackingParams(method="dark"))
+```
+
+Implementation is split into focused modules (`eztrack.io`, `eztrack.tracking`,
+`eztrack.roi`, `eztrack.scale`, `eztrack.summary`, `eztrack.viz`, `eztrack.playback`,
+`eztrack.batch`); `eztrack.location` re-exports the full public API. Legacy dictionaries
+can be migrated with `Session.from_dict(video_dict)`.
+
 # What was modernized
 - Added packaging (`pyproject.toml`, PDM backend), a console entry point (`eztrack`), and a
   bundled-notebook CLI — mirroring minian's conventions.
