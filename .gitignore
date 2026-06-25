@@ -17,12 +17,14 @@ venv/
 .pytest_cache/
 .ruff_cache/
 .coverage
+coverage.xml
 htmlcov/
 
-# ezTrack analysis outputs written next to videos
-*_LocationOutput.csv
-*_SummaryStats.csv
+# ezTrack analysis outputs written next to videos / in the working dir
+*_tracking.csv
+LocationOutput.csv
 BatchSummary.csv
+selections.json
 video_output.avi
 
 # OS

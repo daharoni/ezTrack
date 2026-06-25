@@ -3,6 +3,10 @@
 </p>
 
 # Behavior Tracking with ezTrack
+
+[![pytest](https://github.com/daharoni/ezTrack/actions/workflows/testandcov.yml/badge.svg)](https://github.com/daharoni/ezTrack/actions/workflows/testandcov.yml)
+[![lint](https://github.com/daharoni/ezTrack/actions/workflows/lint.yml/badge.svg)](https://github.com/daharoni/ezTrack/actions/workflows/lint.yml)
+
 ezTrack tracks the location of a single animal across a behavior video on a frame-by-frame
 basis (for example, in an open field), quantifies distance travelled and time spent in
 user-defined regions of interest, and renders motion traces and occupancy heatmaps. The
@@ -113,16 +117,21 @@ and rendering layers on top:
 # Tests
 
 ```bash
-pip install -e ".[test]"
-pytest                 # fast suite
-pytest -m ""           # include the slow full-clip run
-ruff check . && ruff format --check .
+pip install -e ".[test]"      # or: pdm install --with test
+pdm run test                  # fast suite (bare `pytest` works too)
+pdm run test-all              # include the slow full-clip run
+pdm run lint                  # ruff check + ruff format --check
 ```
 
 The suite asserts correctness against a synthetic ground-truth video (a moving square whose
-true position is known each frame), unit-tests the geometry and config layers, and runs a
-golden end-to-end pass on the practice clip with programmatically-set selections. CI
-(`.github/workflows/ci.yml`) runs lint + tests on Python 3.10 and 3.12.
+true position is known each frame), unit-tests the geometry and config layers, exercises the
+batch and interactive-widget builders, and runs a golden end-to-end pass on the practice clip
+with programmatically-set selections.
+
+CI mirrors minian's setup: `testandcov.yml` runs the full suite with coverage across an
+OS × Python matrix (Linux 3.10–3.13; macOS/Windows on the endpoints) and uploads to Codecov;
+`lint.yml` runs ruff and a `pre-commit` job. Install the local hooks with `pre-commit install`
+— `nbstripout` keeps committed notebooks output-free so diffs stay reviewable.
 
 **Interactive widgets** (the HoloViews crop/ROI/mask/distance tools) can't be exercised
 headlessly — they only *produce* `Selections`, which the tests cover directly — so run
