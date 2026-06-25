@@ -16,6 +16,10 @@ dependencies = [
     "pillow",
     "tqdm",
     "jupyter",
+    # Required to render the HoloViews/Bokeh plots in the notebooks under
+    # JupyterLab / VS Code (Panel renders Bokeh through the ipywidgets comm).
+    "ipywidgets>=8",
+    "jupyter-bokeh>=4",
 ]
 
 requires-python = ">=3.10"
@@ -79,9 +83,8 @@ include = ["eztrack/**/*.py", "tests/**/*.py", "**/pyproject.toml"]
 
 [tool.ruff.lint]
 fixable = ["ALL"]
-# Scientific port: keep the high-signal rule families (real bugs, imports,
-# modern syntax) and defer the heavy annotation/docstring/security families
-# (ANN, D, S) for a later pass over the ported `location.py`.
+# High-signal rule families (real bugs, imports, modern syntax). The heavy
+# annotation/docstring/security families (ANN, D, S) are deferred for now.
 select = [
     "E",   # pycodestyle
     "F",   # pyflakes
@@ -90,14 +93,6 @@ select = [
     "B",   # bugbear
     "C4",  # comprehensions
     "SIM", # simplify
-]
-[tool.ruff.lint.per-file-ignores]
-# `location.py` is a verbatim port of the legacy module. These relaxations are
-# scoped to it so the new hand-written CLI/test code stays held to the full bar.
-"eztrack/location.py" = [
-    "E722",  # bare `except:` in the original interactive helpers
-    "E741",  # ambiguous names (l, O, I) in the ported numeric code
-    "E501",  # large legacy docstring blocks; reflowing prose is out of scope
 ]
 
 [tool.ruff.lint.isort]
