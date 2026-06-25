@@ -132,9 +132,15 @@ def track_location(session: Session, params: TrackingParams) -> pd.DataFrame:
     )
 
     df = roi_location(session, df)
-    if session.region_names is not None:
+    drawn_regions = [r for r in (session.region_names or []) if r in df.columns]
+    if session.region_names and not drawn_regions:
+        print(
+            "WARNING: region_names is set but no regions were drawn, so ROI analysis is "
+            "skipped. Draw regions in the ROI step, or set region_names=None to silence this."
+        )
+    if drawn_regions:
         print("Defining transitions...")
-        df["ROI_location"] = roi_linearize(df[session.region_names])
+        df["ROI_location"] = roi_linearize(df[drawn_regions])
         df["ROI_transition"] = roi_transitions(df["ROI_location"])
 
     return scale_distance(session, df=df, column="Distance_px")

@@ -77,6 +77,25 @@ def test_roi_location_membership():
     assert "ROI_coordinates" in out.columns
 
 
+def test_roi_location_skips_when_no_rois_drawn():
+    """region_names declared but no ROIs drawn -> roi_location is a no-op, not a crash."""
+    s = Session(dpath=".", region_names=["left", "right"])
+    s.reference = np.zeros((10, 10))
+    location = pd.DataFrame({"Frame": [0, 1], "X": [1, 2], "Y": [1, 2]})
+
+    # user skipped the optional ROI step entirely (roi_stream is None)
+    out = lt.roi_location(s, location)
+    assert "left" not in out.columns and "right" not in out.columns
+
+    # ROI tool was opened but nothing was drawn (empty stream)
+    class _Empty:
+        data = {"xs": [], "ys": []}
+
+    s.roi_stream = _Empty()
+    out = lt.roi_location(s, location)
+    assert "left" not in out.columns
+
+
 def test_heatmap_and_show_trace():
     """heatmap and show_trace build HoloViews elements from a tracked dataframe."""
     s = Session(dpath=".")

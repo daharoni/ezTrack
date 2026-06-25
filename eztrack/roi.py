@@ -71,10 +71,17 @@ def roi_plot(session: Session) -> hv.Element:
 def roi_location(session: Session, location: pd.DataFrame) -> pd.DataFrame:
     """Add a boolean column per region indicating whether the animal is inside it.
 
-    No-op when ``session.region_names`` is ``None``. Also records the ROI vertex
-    coordinates in an ``ROI_coordinates`` column.
+    No-op when ``session.region_names`` is ``None`` or when no regions were drawn
+    (the ROI step is optional). Also records the ROI vertex coordinates in an
+    ``ROI_coordinates`` column.
     """
     if session.region_names is None:
+        return location
+
+    # region_names can be declared without the (optional) ROI-drawing step having
+    # been run: tolerate a missing/empty roi_stream by adding no region columns.
+    drawn = session.roi_stream.data.get("xs") if session.roi_stream is not None else None
+    if not drawn:
         return location
 
     roi_masks = {}
