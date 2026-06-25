@@ -42,8 +42,12 @@ def _writer(session: Session, shape: tuple[int, int]) -> cv2.VideoWriter:
     )
 
 
-def play_inline(session: Session, params: PlayParams, df: pd.DataFrame) -> None:
-    """Play a segment inline in the notebook with the tracked position marked."""
+def _play(session: Session, params: PlayParams, df: pd.DataFrame, sink) -> None:
+    """Drive the shared playback loop, sending each marked frame to ``sink``.
+
+    ``sink(frame)`` displays one frame; ``sink.close()`` tears the display down.
+    The only difference between the inline and windowed players is the sink.
+    """
     cap = open_capture(session.fpath)
     writer = None
     try:
@@ -57,14 +61,55 @@ def play_inline(session: Session, params: PlayParams, df: pd.DataFrame) -> None:
             if writer is None and params.save:
                 writer = _writer(session, frame.shape)
             cv2.drawMarker(frame, (int(df["x"].iloc[f]), int(df["y"].iloc[f])), color=255)
-            _show(frame, params.fps, params.resize)
+            sink(frame)
             if writer is not None:
                 writer.write(frame)
     finally:
         cap.release()
+        sink.close()
         if writer is not None:
             writer.release()
-    print("Done playing segment")
+
+
+class _InlineSink:
+    """Render frames inline in the notebook, paced to ``fps``."""
+
+    def __init__(self, fps: int, resize):
+        self.fps = fps
+        self.resize = resize
+
+    def __call__(self, frame) -> None:
+        img = PIL.Image.fromarray(frame, "L")
+        if self.resize:
+            img = img.resize(size=self.resize)
+        buffer = BytesIO()
+        img.save(buffer, format="JPEG")
+        display(Image(data=buffer.getvalue()))
+        time.sleep(1 / self.fps)
+        clear_output(wait=True)
+
+    def close(self) -> None:
+        print("Done playing segment")
+
+
+class _WindowSink:
+    """Render frames in an external OpenCV window, paced to ``fps``."""
+
+    def __init__(self, fps: int):
+        self.rate = int(1000 / fps)
+
+    def __call__(self, frame) -> None:
+        cv2.imshow("preview", frame)
+        cv2.waitKey(self.rate)
+
+    def close(self) -> None:
+        cv2.destroyAllWindows()
+        cv2.waitKey(1)
+
+
+def play_inline(session: Session, params: PlayParams, df: pd.DataFrame) -> None:
+    """Play a segment inline in the notebook with the tracked position marked."""
+    _play(session, params, df, _InlineSink(params.fps, params.resize))
 
 
 def play_window(session: Session, params: PlayParams, df: pd.DataFrame) -> None:
@@ -75,38 +120,4 @@ def play_window(session: Session, params: PlayParams, df: pd.DataFrame) -> None:
             "opencv-python-headless. Use play_inline() for the notebook player, "
             "or `pip install opencv-python` for an external window."
         )
-    cap = open_capture(session.fpath)
-    writer = None
-    rate = int(1000 / params.fps)
-    try:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, session.start + params.start)
-        for f in range(params.start, params.stop):
-            ret, frame = cap.read()
-            if not ret:
-                print("warning: failed to get video frame")
-                continue
-            frame = preprocess(frame, session)
-            if writer is None and params.save:
-                writer = _writer(session, frame.shape)
-            cv2.drawMarker(frame, (int(df["x"].iloc[f]), int(df["y"].iloc[f])), color=255)
-            cv2.imshow("preview", frame)
-            cv2.waitKey(rate)
-            if writer is not None:
-                writer.write(frame)
-    finally:
-        cap.release()
-        cv2.destroyAllWindows()
-        cv2.waitKey(1)
-        if writer is not None:
-            writer.release()
-
-
-def _show(frame, fps: int, resize) -> None:
-    img = PIL.Image.fromarray(frame, "L")
-    if resize:
-        img = img.resize(size=resize)
-    buffer = BytesIO()
-    img.save(buffer, format="JPEG")
-    display(Image(data=buffer.getvalue()))
-    time.sleep(1 / fps)
-    clear_output(wait=True)
+    _play(session, params, df, _WindowSink(params.fps))

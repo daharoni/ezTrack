@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from .config import Session, Stretch, TrackParams
+from .regions import clip_to_indices
 from .tracking import locate
 from .video import open_capture, preprocess
 
@@ -84,8 +85,7 @@ def trace(session: Session, df: pd.DataFrame, color: str = "red", alpha: float =
 def heatmap(session: Session, df: pd.DataFrame, sigma: float | None = None) -> hv.Image:
     """Gaussian-smoothed occupancy heatmap of the animal's location."""
     h, w = session.reference.shape
-    yi = np.clip(df["y"].to_numpy().astype(int), 0, h - 1)
-    xi = np.clip(df["x"].to_numpy().astype(int), 0, w - 1)
+    xi, yi = clip_to_indices(df["x"].to_numpy(), df["y"].to_numpy(), (h, w))
     grid = np.zeros((h, w))
     np.add.at(grid, (yi, xi), 1)  # vectorized occupancy count
 

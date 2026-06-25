@@ -30,16 +30,20 @@ def syn_truth_x() -> np.ndarray:
     return np.linspace(SYN_X0, SYN_X1, SYN_N)
 
 
+def draw_square(frame: np.ndarray, cx: int, cy: int, side: int = SYN_SIDE, value: int = 255):
+    """Paint a ``side``-wide square of ``value`` centered at ``(cx, cy)`` into ``frame``."""
+    half = side // 2
+    frame[cy - half : cy + half, cx - half : cx + half] = value
+    return frame
+
+
 @pytest.fixture(scope="session")
 def synthetic_video(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Write the moving-square video to a temp AVI and return its path."""
     path = tmp_path_factory.mktemp("video") / "moving_square.avi"
     writer = cv2.VideoWriter(str(path), 0, 20.0, (SYN_W, SYN_H), isColor=True)
-    half = SYN_SIDE // 2
     for cx in syn_truth_x().astype(int):
-        frame = np.zeros((SYN_H, SYN_W, 3), dtype=np.uint8)
-        frame[SYN_Y - half : SYN_Y + half, cx - half : cx + half] = 255
-        writer.write(frame)
+        writer.write(draw_square(np.zeros((SYN_H, SYN_W, 3), dtype=np.uint8), cx, SYN_Y))
     writer.release()
     assert path.exists()
     return path

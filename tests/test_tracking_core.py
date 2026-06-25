@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from conftest import draw_square
 
 from eztrack import TrackParams, Window
 from eztrack.tracking import locate
@@ -11,10 +12,7 @@ from eztrack.tracking import locate
 
 def _frame_with_blob(cx, cy, value=255, shape=(80, 120), side=12):
     """Black frame with a bright square centered at (cx, cy)."""
-    frame = np.zeros(shape, dtype=np.uint8)
-    half = side // 2
-    frame[cy - half : cy + half, cx - half : cx + half] = value
-    return frame
+    return draw_square(np.zeros(shape, dtype=np.uint8), cx, cy, side, value)
 
 
 def test_locate_finds_blob_center():

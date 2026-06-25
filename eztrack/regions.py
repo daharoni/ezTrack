@@ -15,11 +15,22 @@ from .config import Mask, ROIs
 
 __all__ = [
     "rasterize",
+    "clip_to_indices",
     "mask_array",
     "roi_membership",
     "linearize",
     "transitions",
 ]
+
+
+def clip_to_indices(
+    xs: np.ndarray, ys: np.ndarray, shape: tuple[int, int]
+) -> tuple[np.ndarray, np.ndarray]:
+    """Clip x/y coordinates to integer, in-bounds ``(xi, yi)`` pixel indices for ``shape``."""
+    h, w = shape
+    xi = np.clip(np.asarray(xs), 0, w - 1).astype(np.intp)
+    yi = np.clip(np.asarray(ys), 0, h - 1).astype(np.intp)
+    return xi, yi
 
 
 def rasterize(polygon: list[list[float]], shape: tuple[int, int]) -> np.ndarray:
@@ -50,9 +61,7 @@ def roi_membership(
     """
     if not rois:
         return {}
-    h, w = shape
-    yi = np.clip(np.asarray(ys), 0, h - 1).astype(np.intp)
-    xi = np.clip(np.asarray(xs), 0, w - 1).astype(np.intp)
+    xi, yi = clip_to_indices(xs, ys, shape)
     membership = {}
     for name, polygon in zip(rois.names, rois.polygons, strict=False):
         inside = rasterize(polygon, shape)

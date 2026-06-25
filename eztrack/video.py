@@ -71,34 +71,21 @@ def first_frame(session: Session, *, crop: bool = False) -> np.ndarray:
         cap.release()
 
 
-def video_info(session: Session) -> dict[str, float]:
-    """Return basic capture properties (frame count, fps, height, width)."""
-    cap = open_capture(session.fpath)
-    try:
-        return {
-            "frames": int(cap.get(cv2.CAP_PROP_FRAME_COUNT)),
-            "fps": cap.get(cv2.CAP_PROP_FPS),
-            "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-            "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
-        }
-    finally:
-        cap.release()
-
-
 def reference_frame(
     session: Session,
     num_frames: int = 100,
-    altfile: bool = False,
     frames: list[int] | None = None,
 ) -> np.ndarray:
     """Build the reference frame as the per-pixel median of sampled frames.
 
-    Mutates and returns ``session.reference``. Pass ``altfile=True`` to sample
-    an animal-free companion video (``session.altfile``), or ``frames`` to pick
-    specific frame numbers.
+    Mutates and returns ``session.reference``. When ``session.altfile`` is set it
+    samples that animal-free companion video instead of the analysed one; pass
+    ``frames`` to pick specific frame numbers.
     """
-    path = os.path.join(os.path.normpath(session.dpath), session.altfile) if altfile else None
-    cap = open_capture(path or session.fpath)
+    altpath = (
+        os.path.join(os.path.normpath(session.dpath), session.altfile) if session.altfile else None
+    )
+    cap = open_capture(altpath or session.fpath)
     try:
         cap_max = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         end = int(session.end) if session.end is not None else cap_max
