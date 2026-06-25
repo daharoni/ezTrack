@@ -1,6 +1,6 @@
 [project]
 name = "eztrack"
-version = "1.0.0"
+version = "2.0.0"
 description = "Open-source video analysis pipeline for tracking the location of an animal in behavior recordings (e.g. open field)."
 authors = [
     {name = "Denise Cai Lab", email = "denisecailab@gmail.com"},

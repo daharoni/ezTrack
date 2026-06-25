@@ -1,4 +1,8 @@
-"""Visualizations: tracking-threshold previews, motion traces, occupancy heatmaps."""
+"""HoloViews visualizations: shared image builder, threshold preview, trace, heatmap.
+
+Every plot goes through :func:`image` so the gray / y-inverted / stretched options
+live in exactly one place.
+"""
 
 from __future__ import annotations
 
@@ -7,118 +11,86 @@ import holoviews as hv
 import numpy as np
 import pandas as pd
 
-from .config import Session, TrackingParams
+from .config import Session, Stretch, TrackParams
 from .tracking import locate
+from .video import open_capture, preprocess
 
 hv.extension("bokeh")
 
-__all__ = ["location_thresh_view", "show_trace", "heatmap"]
+__all__ = ["image", "threshold_preview", "trace", "heatmap"]
 
 
-def location_thresh_view(session: Session, params: TrackingParams, examples: int = 4) -> hv.Layout:
-    """Show tracking on a random subset of frames to sanity-check ``params``.
-
-    Original frame (left) and thresholded difference with the center of mass
-    marked (right). Windowing is not applied (frames are analysed in isolation).
-    """
-    cap = cv2.VideoCapture(session.fpath)
-    cap_max = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap_max = int(session.end) if session.end is not None else cap_max
-
-    images = []
-    for _example in range(examples):
-        ret = False
-        while ret is False:
-            frm = np.random.randint(session.start, cap_max)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frm)
-            ret, dif, com, frame = locate(cap, params, session)
-
-        image_orig = hv.Image((np.arange(frame.shape[1]), np.arange(frame.shape[0]), frame))
-        image_orig.opts(
-            width=int(session.reference.shape[1] * session.stretch.width),
-            height=int(session.reference.shape[0] * session.stretch.height),
-            invert_yaxis=True,
-            cmap="gray",
-            toolbar="below",
-            title="Frame: " + str(frm),
-        )
-        orig_overlay = image_orig * hv.Points(([com[1]], [com[0]])).opts(
-            color="red", size=20, marker="+", line_width=3
-        )
-
-        dif = dif * (255 // dif.max())
-        image_heat = hv.Image((np.arange(dif.shape[1]), np.arange(dif.shape[0]), dif))
-        image_heat.opts(
-            width=int(dif.shape[1] * session.stretch.width),
-            height=int(dif.shape[0] * session.stretch.height),
-            invert_yaxis=True,
-            cmap="jet",
-            toolbar="below",
-            title="Frame: " + str(frm - session.start),
-        )
-        heat_overlay = image_heat * hv.Points(([com[1]], [com[0]])).opts(
-            color="red", size=20, marker="+", line_width=3
-        )
-
-        images.extend([orig_overlay, heat_overlay])
-
-    cap.release()
-    return hv.Layout(images)
-
-
-def show_trace(
-    session: Session, location: pd.DataFrame, color: str = "red", alpha: float = 0.8, size: int = 3
-) -> hv.Element:
-    """Overlay the animal's traced path on the reference frame (with ROI outlines)."""
-    poly = None
-    if session.roi_stream is not None:
-        lst = []
-        for poly_idx in range(len(session.roi_stream.data["xs"])):
-            x = np.array(session.roi_stream.data["xs"][poly_idx])
-            y = np.array(session.roi_stream.data["ys"][poly_idx])
-            lst.append([(x[vert], y[vert]) for vert in range(len(x))])
-        poly = hv.Polygons(lst).opts(fill_alpha=0.1, line_dash="dashed")
-
-    reference = session.reference
-    image = hv.Image(
-        (np.arange(reference.shape[1]), np.arange(reference.shape[0]), reference)
-    ).opts(
-        width=int(reference.shape[1] * session.stretch.width),
-        height=int(reference.shape[0] * session.stretch.height),
+def image(arr: np.ndarray, stretch: Stretch | None = None, title: str = "", **opts) -> hv.Image:
+    """Build a stretched, gray, y-inverted HoloViews Image of a 2-D array."""
+    stretch = stretch or Stretch()
+    img = hv.Image((np.arange(arr.shape[1]), np.arange(arr.shape[0]), arr))
+    return img.opts(
+        width=int(arr.shape[1] * stretch.width),
+        height=int(arr.shape[0] * stretch.height),
         invert_yaxis=True,
         cmap="gray",
         toolbar="below",
-        title="Motion Trace",
+        title=title,
+        **opts,
     )
 
-    points = hv.Scatter(np.array([location["X"], location["Y"]]).T).opts(
-        color=color, alpha=alpha, size=size
-    )
 
-    return (image * poly * points) if poly is not None else (image * points)
+def threshold_preview(session: Session, params: TrackParams, examples: int = 4) -> hv.Layout:
+    """Show tracking on a few random frames to sanity-check ``params``.
+
+    Each example pairs the original frame with the thresholded difference, both
+    marked with the detected center of mass. Windowing is not applied (frames
+    are examined in isolation).
+    """
+    if session.reference is None:
+        raise ValueError("No reference frame. Call eztrack.reference_frame(session) first.")
+    cap = open_capture(session.fpath)
+    try:
+        cap_max = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        end = int(session.end) if session.end is not None else cap_max
+
+        panels = []
+        for _ in range(examples):
+            loc = None
+            while loc is None or not loc.detected:
+                frm = int(np.random.randint(session.start, end))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frm)
+                ret, frame = cap.read()
+                if not ret:
+                    continue
+                loc = locate(preprocess(frame, session), session.reference, params)
+            marker = hv.Points(([loc.x], [loc.y])).opts(
+                color="red", size=20, marker="+", line_width=3
+            )
+            orig = image(preprocess(frame, session), session.stretch, f"Frame {frm}") * marker
+            heat = image(loc.dif, session.stretch, f"Frame {frm}").opts(cmap="jet") * marker
+            panels.extend([orig, heat])
+    finally:
+        cap.release()
+    return hv.Layout(panels)
 
 
-def heatmap(session: Session, location: pd.DataFrame, sigma: float | None = None) -> hv.Image:
-    """Gaussian-smoothed occupancy heatmap of the animal's location over the session."""
-    grid = np.zeros(session.reference.shape)
-    ys = location["Y"].to_numpy()
-    xs = location["X"].to_numpy()
-    for frame in range(len(location)):
-        grid[int(ys[frame]), int(xs[frame])] += 1
+def trace(session: Session, df: pd.DataFrame, color: str = "red", alpha: float = 0.8) -> hv.Element:
+    """Overlay the traced path (and any ROI outlines) on the reference frame."""
+    img = image(session.reference, session.stretch, "Motion Trace")
+    rois = session.selections.rois
+    if rois:
+        polys = hv.Polygons([[(v[0], v[1]) for v in poly] for poly in rois.polygons])
+        img = img * polys.opts(fill_alpha=0.1, line_dash="dashed")
+    points = hv.Scatter((df["x"], df["y"])).opts(color=color, alpha=alpha, size=3)
+    return img * points
 
-    sigma = np.mean(grid.shape) * 0.05 if sigma is None else sigma
+
+def heatmap(session: Session, df: pd.DataFrame, sigma: float | None = None) -> hv.Image:
+    """Gaussian-smoothed occupancy heatmap of the animal's location."""
+    h, w = session.reference.shape
+    yi = np.clip(df["y"].to_numpy().astype(int), 0, h - 1)
+    xi = np.clip(df["x"].to_numpy().astype(int), 0, w - 1)
+    grid = np.zeros((h, w))
+    np.add.at(grid, (yi, xi), 1)  # vectorized occupancy count
+
+    sigma = float(np.mean(grid.shape) * 0.05) if sigma is None else sigma
     grid = cv2.GaussianBlur(grid, (0, 0), sigma)
-    grid = (grid / grid.max()) * 255
-
-    map_i = hv.Image((np.arange(grid.shape[1]), np.arange(grid.shape[0]), grid))
-    map_i.opts(
-        width=int(grid.shape[1] * session.stretch.width),
-        height=int(grid.shape[0] * session.stretch.height),
-        invert_yaxis=True,
-        cmap="jet",
-        alpha=1,
-        colorbar=False,
-        toolbar="below",
-        title="Heatmap",
-    )
-    return map_i
+    if grid.max() > 0:
+        grid = grid / grid.max() * 255
+    return image(grid, session.stretch, "Heatmap").opts(cmap="jet")

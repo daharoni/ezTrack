@@ -8,34 +8,35 @@ basis (for example, in an open field), quantifies distance travelled and time sp
 user-defined regions of interest, and renders motion traces and occupancy heatmaps. The
 workflow is driven from Jupyter notebooks.
 
-This repository has been modernized to install and run as a standard Python package on
-current scientific Python (Python ≥ 3.10, NumPy/SciPy/pandas/OpenCV/HoloViews), so it can be
-used in a shared virtual environment alongside [minian](https://github.com/miniscope/minian).
+This is a from-scratch rewrite of the original ezTrack **Location Tracking** module around a
+small, pure, fully-tested core, packaged for current scientific Python (Python ≥ 3.10,
+NumPy/SciPy/pandas/OpenCV/HoloViews) so it can run in a shared virtual environment alongside
+[minian](https://github.com/miniscope/minian).
 
-> **Scope note:** This package currently ships the **Location Tracking** module. The legacy
-> **Freeze Analysis** module remains in `FreezeAnalysis/` as unmodernized source and is not
-> part of the installable package.
+> **Note on reproducibility:** the tracking algorithm is the same in spirit as the original
+> (median background → per-frame difference → threshold → center of mass), but this is a
+> clean reimplementation and output is *not* guaranteed bit-identical to pre-2.0 ezTrack or
+> the 2019 paper. Pin a version if you need stable numbers across an analysis.
+
+> **Scope:** this package ships the **Location Tracking** module. The legacy **Freeze
+> Analysis** module remains in `FreezeAnalysis/` as unmodernized source and is not part of
+> the installable package.
 
 ![Examples](../master/Images/Examples.gif)
 
 # Installation
-
-Use a virtual environment (recommended), then install:
 
 ```bash
 python -m venv .venv
 # Windows:  .venv\Scripts\activate
 # macOS/Linux:  source .venv/bin/activate
 
-# from a clone of this repo (editable, for teaching/development):
-pip install -e .
-
-# or build/install the package:
-pip install .
+pip install -e .          # editable, for teaching/development
+# or: pip install .
 ```
 
-OpenCV is installed as `opencv-python-headless` (no GUI windows), matching minian. The
-notebook plays tracking video inline via `PlayVideo`; the external-window `PlayVideo_ext`
+OpenCV is installed as `opencv-python-headless` (no GUI windows), matching minian. Video
+plays back inline in the notebook via `play_inline`; the external-window `play_window`
 requires a GUI build of OpenCV and is disabled under the headless install.
 
 # Running the notebooks
@@ -49,54 +50,83 @@ eztrack notebooks copy individual      # single-video tracking notebook
 eztrack notebooks copy batch           # batch-processing notebook
 ```
 
-Then launch Jupyter and open the copied notebook:
+Then launch Jupyter and open the copied notebook (`jupyter notebook`). If you cloned the
+repo you can also open them in place under `eztrack/notebooks/`. The `individual` notebook
+defaults to the sample clip in `PracticeVideos/`.
 
-```bash
-jupyter notebook
-```
+# The pipeline
 
-If you cloned the repo, you can also open the notebooks in place under
-`eztrack/notebooks/`. The `individual` notebook defaults to the sample clip in
-`PracticeVideos/`; for your own data, edit the `video_dict` `dpath`/`file` entries.
-
-# Location Tracking Module
-The location tracking module analyzes a single animal's location frame by frame. It lets
-you crop the video frame, exclude regions from analysis, specify regions of interest (e.g.
-left/right), quantify time spent in each region and distance travelled, and define a
-real-world scale.
-
-![schematic_lt](../master/Images/LocationTracking_Schematic.png)
-
-## API at a glance
-Configuration uses typed dataclasses (`Session`, `TrackingParams`, `DisplayParams`,
-`Scale`, `Stretch`, `Mask`) instead of plain dictionaries. Pipeline functions take a
-`Session` and mutate it in place as the analysis progresses:
+The analysis is a handful of explicit steps over a `Session`. Selections (crop, exclusion
+mask, ROIs, scale) are plain serializable objects: the interactive notebook widgets produce
+them, but you can also build them by hand or load them from a JSON file.
 
 ```python
-import eztrack.location as lt
+import eztrack as ez
 
-session = lt.Session(dpath="videos", file="clip.mp4", region_names=["left", "right"])
-lt.load_and_crop(session, cropmethod="Box")   # sets session.crop
-lt.make_reference(session, num_frames=50)      # sets session.reference
-lt.roi_plot(session)                           # sets session.roi_stream
-location = lt.track_location(session, lt.TrackingParams(method="dark"))
+session = ez.Session(
+    dpath="videos", file="clip.mp4",
+    region_names=["left", "right"],
+)
+
+# 1. selections — from notebook widgets, or constructed/loaded directly
+ez.crop_tool(session)                 # draw a box  -> session.selections.crop
+ez.mask_tool(session)                 # exclude regions -> session.selections.mask
+ez.reference_frame(session, num_frames=50)
+ez.roi_tool(session)                  # draw named regions -> session.selections.rois
+ez.distance_tool(session); ez.set_scale(session, 100, "cm")
+
+# replay the exact same selections later / across videos:
+session.selections.save("selections.json")
+session.selections = ez.Selections.load("selections.json")
+
+# 2. tune + track
+params = ez.TrackParams(threshold_pct=99.5, method="abs", window=ez.Window(100, 0.9))
+ez.threshold_preview(session, params)              # sanity-check on random frames
+location = ez.track(session, params)               # -> per-frame DataFrame
+
+# 3. visualize + summarize
+ez.trace(session, location); ez.heatmap(session, location)
+summary = ez.summarize(location, session, bins=None)
 ```
 
-Implementation is split into focused modules (`eztrack.io`, `eztrack.tracking`,
-`eztrack.roi`, `eztrack.scale`, `eztrack.summary`, `eztrack.viz`, `eztrack.playback`,
-`eztrack.batch`); `eztrack.location` re-exports the full public API. Legacy dictionaries
-can be migrated with `Session.from_dict(video_dict)`.
+Output is a tidy per-frame `DataFrame` (`frame, x, y, detected, distance_px`, a scaled
+`distance_<unit>` when a scale is set, plus one boolean column per ROI, an `roi` label and
+an `roi_transition` flag). Run parameters and ROI geometry live in `df.attrs`, not repeated
+in every row.
 
-# What was modernized
-- Added packaging (`pyproject.toml`, PDM backend), a console entry point (`eztrack`), and a
-  bundled-notebook CLI — mirroring minian's conventions.
-- Fixed deprecated/broken APIs for the modern stack: HoloViews `hv.extension`, SciPy
-  `ndimage.center_of_mass`, pandas Copy-on-Write-safe ROI labelling/transition logic,
-  OpenCV `int32` polygon points and keyword `interpolation=` on `cv2.resize`.
-- Removed the blanket `warnings.filterwarnings("ignore")`.
+## Architecture
 
-The package version is a static `1.0.0` for this first PyPI-ready cut; SCM-based versioning
-(as minian uses) can be adopted later.
+A HoloViews-free **pure core** that is fully unit-tested headlessly, with thin interactive
+and rendering layers on top:
+
+| Module | Responsibility |
+| --- | --- |
+| `eztrack.config` | plain, serializable selections + validated parameters (no OpenCV/HoloViews) |
+| `eztrack.video` | frame reading, preprocessing, reference-frame generation |
+| `eztrack.regions` | polygon rasterization, ROI membership, transitions (pure geometry) |
+| `eztrack.tracking` | the per-frame `locate` and the full-session `track` |
+| `eztrack.analyze` | real-world scaling and binned summaries |
+| `eztrack.interactive` | HoloViews widgets that populate `Selections` |
+| `eztrack.viz` | trace / heatmap / threshold-preview plots |
+| `eztrack.playback`, `eztrack.batch` | inline/window playback and folder batch runs |
+
+# Tests
+
+```bash
+pip install -e ".[test]"
+pytest                 # fast suite
+pytest -m ""           # include the slow full-clip run
+ruff check . && ruff format --check .
+```
+
+The suite asserts correctness against a synthetic ground-truth video (a moving square whose
+true position is known each frame), unit-tests the geometry and config layers, and runs a
+golden end-to-end pass on the practice clip with programmatically-set selections. CI
+(`.github/workflows/ci.yml`) runs lint + tests on Python 3.10 and 3.12.
+
+**Interactive widgets** (the HoloViews crop/ROI/mask/distance tools) can't be exercised
+headlessly — they only *produce* `Selections`, which the tests cover directly — so run
+`LocationTracking_Individual.ipynb` top-to-bottom to confirm the widgets render.
 
 # Citation
 Please cite ezTrack if you use it in your research:
@@ -105,8 +135,7 @@ Please cite ezTrack if you use it in your research:
 > An open-source video analysis pipeline for the investigation of animal behavior.
 > *Scientific Reports* 9(1): 19979.
 
-For the original instructions and background, see the
-[ezTrack wiki](https://github.com/denisecailab/ezTrack/wiki).
+For background, see the [ezTrack wiki](https://github.com/denisecailab/ezTrack/wiki).
 
 # License
 This project is licensed under GNU GPLv3.
