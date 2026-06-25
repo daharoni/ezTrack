@@ -121,6 +121,12 @@ def test_summarize_location_whole_session():
     assert len(out) == 1
     assert out["Distance_px"].iloc[0] == df["Distance_px"].sum()
 
+    # region_names declared but no ROI columns present (optional step skipped):
+    # must summarize distance without raising.
+    s_regions = Session(dpath=".", region_names=["left", "right"])
+    out2 = lt.summarize_location(df, s_regions, bin_dict={"a": (0, 4), "b": (5, 9)})
+    assert len(out2) == 2
+
 
 def test_session_from_dict_roundtrip():
     """Session.from_dict accepts a legacy video_dict (nested dicts converted)."""

@@ -25,12 +25,15 @@ def summarize_location(
     bins["Distance_px"] = bins["range(f)"].apply(
         lambda r: location[location["Frame"].between(*r)]["Distance_px"].sum()
     )
-    if session.region_names is not None:
+    # Only summarize regions that were actually drawn (and so are columns of
+    # `location`); region_names may be declared without running the optional ROI step.
+    regions = [r for r in (session.region_names or []) if r in location.columns]
+    if regions:
         bins_reg = bins["range(f)"].apply(
-            lambda r: location[location["Frame"].between(*r)][session.region_names].mean()
+            lambda r: location[location["Frame"].between(*r)][regions].mean()
         )
         bins = bins.join(bins_reg)
-        drp_cols = ["Distance_px", "Frame", "X", "Y"] + session.region_names
+        drp_cols = ["Distance_px", "Frame", "X", "Y"] + regions
     else:
         drp_cols = ["Distance_px", "Frame", "X", "Y"]
     bins = pd.merge(
