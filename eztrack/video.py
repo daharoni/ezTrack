@@ -18,6 +18,7 @@ from .config import Session
 __all__ = [
     "preprocess",
     "open_capture",
+    "downscale",
     "first_frame",
     "reference_frame",
     "discover_files",
@@ -41,21 +42,29 @@ def open_capture(path: str) -> cv2.VideoCapture:
 
 
 def preprocess(frame: np.ndarray, session: Session, *, crop: bool = True) -> np.ndarray:
-    """Grayscale -> optional downsample -> optional crop.
+    """Grayscale -> optional crop, in the video's original pixel space.
 
     Every read path (reference, tracking, playback) funnels through here so the
-    transform is defined exactly once.
+    transform is defined exactly once. Downsampling is deliberately *not* done
+    here: it is a tracking-loop speed optimization (see :func:`downscale` and its
+    use in ``track``) and must not change the coordinate space of the reference,
+    the selections drawn on it, or the reported positions.
     """
     out = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    if session.downsample < 1:
-        out = cv2.resize(
-            out,
-            (int(out.shape[1] * session.downsample), int(out.shape[0] * session.downsample)),
-            interpolation=cv2.INTER_NEAREST,
-        )
     if crop and session.selections.crop is not None:
         out = session.selections.crop.apply(out)
     return out
+
+
+def downscale(arr: np.ndarray, factor: float) -> np.ndarray:
+    """Shrink ``arr`` by a reduction ``factor`` (2 = half size) for faster math.
+
+    No-op at ``factor <= 1``. Positions found in the shrunken frame are mapped
+    back by multiplying by ``factor`` (see ``track``).
+    """
+    if factor <= 1:
+        return arr
+    return cv2.resize(arr, None, fx=1 / factor, fy=1 / factor, interpolation=cv2.INTER_NEAREST)
 
 
 def first_frame(session: Session, *, crop: bool = False) -> np.ndarray:

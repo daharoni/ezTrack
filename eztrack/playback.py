@@ -42,17 +42,36 @@ def _writer(session: Session, shape: tuple[int, int]) -> cv2.VideoWriter:
     )
 
 
+def _marker_track(df: pd.DataFrame, seg: range) -> pd.DataFrame:
+    """Marker ``x``/``y`` for each absolute frame in ``seg``, keyed by frame number.
+
+    Looking up by frame (not row position) keeps the marker aligned with the video
+    when the track is sparse (temporal downsampling) or filtered; skipped frames
+    are forward-filled to the last known position, and frames before the first
+    tracked one are left NaN (no marker drawn).
+    """
+    return df.set_index("frame")[["x", "y"]].sort_index().reindex(seg, method="ffill")
+
+
 def _play(session: Session, params: PlayParams, df: pd.DataFrame, sink) -> None:
     """Drive the shared playback loop, sending each marked frame to ``sink``.
 
     ``sink(frame)`` displays one frame; ``sink.close()`` tears the display down.
     The only difference between the inline and windowed players is the sink.
+
+    The marker is looked up by **frame number**, not row position, so the dot
+    stays aligned with the video even when the track is sparse (temporal
+    downsampling) or has been filtered. Frames with no tracked row (e.g. those
+    skipped by ``temporal_downsample``) reuse the last known position.
     """
+    seg = range(session.start + params.start, session.start + params.stop)
+    pos = _marker_track(df, seg)
+
     cap = open_capture(session.fpath)
     writer = None
     try:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, session.start + params.start)
-        for f in range(params.start, params.stop):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, seg.start)
+        for abs_frame in seg:
             ret, frame = cap.read()
             if not ret:
                 print("warning: failed to get video frame")
@@ -60,7 +79,9 @@ def _play(session: Session, params: PlayParams, df: pd.DataFrame, sink) -> None:
             frame = preprocess(frame, session)
             if writer is None and params.save:
                 writer = _writer(session, frame.shape)
-            cv2.drawMarker(frame, (int(df["x"].iloc[f]), int(df["y"].iloc[f])), color=255)
+            x, y = pos.loc[abs_frame, "x"], pos.loc[abs_frame, "y"]
+            if pd.notna(x):
+                cv2.drawMarker(frame, (int(x), int(y)), color=255)
             sink(frame)
             if writer is not None:
                 writer.write(frame)

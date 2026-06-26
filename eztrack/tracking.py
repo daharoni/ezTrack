@@ -14,15 +14,15 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 import pandas as pd
-from scipy import ndimage
+from numpy.lib.stride_tricks import sliding_window_view
 from tqdm.auto import tqdm
 
 from .analyze import apply_scale
 from .config import Session, TrackParams
 from .regions import linearize, mask_array, roi_membership, transitions
-from .video import open_capture, preprocess
+from .video import downscale, open_capture, preprocess
 
-__all__ = ["Located", "locate", "track"]
+__all__ = ["Located", "locate", "track", "hampel_filter"]
 
 
 @dataclass
@@ -50,45 +50,95 @@ def locate(
     animal is "not detected": the prior location is reused (or the frame center
     on the first frame) and ``detected`` is False.
     """
-    if params.method == "abs":
-        dif = np.abs(frame.astype(np.int16) - reference.astype(np.int16))
+    ref16, frame16 = reference.astype(np.int16), frame.astype(np.int16)
+    raw_threshold = params.threshold_abs is not None and params.threshold_on == "raw"
+    if raw_threshold:
+        # Threshold the raw pixel value directly, ignoring the baseline. The clip
+        # both selects (pixels past the cutoff) and weights (by how far past), so
+        # no further cutoff is applied below.
+        t = params.threshold_abs
+        if params.method == "dark":
+            dif = np.clip(t - frame16, 0, None)  # pixels darker than t, weighted by darkness
+        else:  # "light" -- "abs" rejected in TrackParams for raw mode
+            dif = np.clip(frame16 - t, 0, None)  # pixels brighter than t
+    elif params.method == "abs":
+        dif = np.abs(frame16 - ref16)
     elif params.method == "light":
-        dif = frame.astype(np.int16) - reference.astype(np.int16)
+        dif = frame16 - ref16
     else:  # "dark" -- validated in TrackParams
-        dif = reference.astype(np.int16) - frame.astype(np.int16)
+        dif = ref16 - frame16
 
     if mask is not None:
         dif[mask] = 0
 
+    # An absolute difference cutoff is in raw intensity units, so apply it *before*
+    # windowing rescales the difference. The signed ``dif`` already encodes the
+    # method's direction, so one cutoff covers dark (darker by >= cutoff), light
+    # (brighter) and abs (changed either way). (Raw mode is already thresholded by
+    # its clip above.)
+    if params.threshold_abs is not None and not raw_threshold:
+        dif = np.where(dif < params.threshold_abs, 0, dif)
+
     if prior is not None and params.window is not None:
         dif = _apply_window(dif, prior, params.window)
 
-    dif = np.where(dif < np.percentile(dif, params.threshold_pct), 0, dif)
+    # The percentile cutoff is applied after windowing, so the weighting shapes
+    # which pixels survive (down-weighted far pixels fall below the percentile).
+    if params.threshold_abs is None:
+        dif = np.where(dif < np.percentile(dif, params.threshold_pct), 0, dif)
 
-    if params.remove_wire:
-        dif = _remove_wire(dif, params.wire_kernel)
+    if params.denoise:
+        dif = _denoise(dif, params.denoise_kernel)
 
-    if dif.max() <= 0:  # nothing detected this frame
+    com = _center_of_mass(dif)
+    if com is None:  # nothing rose above threshold this frame
         h, w = frame.shape
         x, y = prior if prior is not None else (w / 2, h / 2)
         return Located(x=float(x), y=float(y), detected=False, dif=dif)
 
-    cy, cx = ndimage.center_of_mass(dif)
-    return Located(x=float(cx), y=float(cy), detected=True, dif=dif)
+    return Located(x=com[0], y=com[1], detected=True, dif=dif)
 
 
 def _apply_window(dif: np.ndarray, prior: tuple[float, float], window) -> np.ndarray:
-    """Down-weight differences far from ``prior`` so distractors don't grab the COM."""
+    """Down-weight differences far from ``prior`` so distractors don't grab the COM.
+
+    Returns float32 (rather than float64): for an estimate that only feeds a
+    thresholded center-of-mass, single precision is more than enough and roughly
+    halves the per-frame cost of this and the percentile that follows.
+    """
     half = window.size // 2
     px, py = int(round(prior[0])), int(round(prior[1]))
-    dif = dif + (-dif.min())  # shift so the lowest value is 0 before scaling
-    weights = np.full(dif.shape, 1 - window.weight)
+    shifted = (dif - dif.min()).astype(np.float32)  # shift so the lowest value is 0
+    weights = np.full(dif.shape, np.float32(1 - window.weight), dtype=np.float32)
     weights[max(py - half, 0) : py + half, max(px - half, 0) : px + half] = 1
-    return dif * weights
+    return shifted * weights
 
 
-def _remove_wire(dif: np.ndarray, kernel: int) -> np.ndarray:
-    """Morphological open to drop a thin (e.g. headstage-wire) signal; revert if it nukes all."""
+def _center_of_mass(dif: np.ndarray) -> tuple[float, float] | None:
+    """Intensity-weighted ``(x, y)`` of the surviving pixels, or ``None`` if none.
+
+    Equivalent to :func:`scipy.ndimage.center_of_mass` but computed only over the
+    nonzero pixels -- after thresholding that is a tiny fraction of the frame, so
+    this is several times faster than scanning the whole array.
+    """
+    ys, xs = np.nonzero(dif)
+    if xs.size == 0:
+        return None
+    weights = dif[ys, xs].astype(np.float64)
+    total = weights.sum()
+    if total == 0:
+        return None
+    return (xs * weights).sum() / total, (ys * weights).sum() / total
+
+
+def _denoise(dif: np.ndarray, kernel: int) -> np.ndarray:
+    """Morphologically open (erode then dilate) the thresholded mask.
+
+    Erosion removes any feature thinner than ``kernel`` px (specks, a thin
+    headstage wire); the following dilation grows the survivors back to roughly
+    their original size, so the animal's bulk is preserved. Reverts to the input
+    if the opening would erase everything (better a noisy estimate than none).
+    """
     krn = np.ones((kernel, kernel), np.uint8)
     opened = cv2.morphologyEx(dif.astype(np.int16), cv2.MORPH_OPEN, krn)
     return dif if opened.sum() == 0 else opened
@@ -101,44 +151,68 @@ def track(session: Session, params: TrackParams, progress: bool = True) -> pd.Da
     ``distance_px`` (and a scaled ``distance_<unit>`` when a scale is set), plus
     one boolean column per ROI, an ``roi`` label, and an ``roi_transition`` flag
     when ROIs are present. Run parameters live in ``df.attrs``, not in every row.
+
+    ``session.spatial_downsample`` and ``session.temporal_downsample`` (both
+    reduction factors, 1 = none) only speed things up; outputs stay in the video's
+    **original** space. Spatial tracking happens on a shrunken frame with positions
+    mapped back to full-res pixels. Temporal tracking runs only every Nth frame:
+    those frames are the rows of the output (no positions are invented for the
+    skipped frames) and the ``frame`` column carries the real frame numbers, so
+    downstream can resample if it wants to.
     """
     if session.reference is None:
         raise ValueError("No reference frame. Call eztrack.reference_frame(session) first.")
+
+    ds = session.spatial_downsample
+    stride = session.temporal_downsample
+    reference = downscale(session.reference, ds)
+    full_mask = mask_array(session.selections.mask, session.reference.shape)
+    mask = None if full_mask is None else downscale(full_mask.astype(np.uint8), ds).astype(bool)
 
     cap = open_capture(session.fpath)
     try:
         cap.set(cv2.CAP_PROP_POS_FRAMES, session.start)
         cap_max = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         end = int(session.end) if session.end is not None else cap_max
-        n = end - session.start
+        n = max(end - session.start, 0)
 
-        mask = mask_array(session.selections.mask, session.reference.shape)
-
-        xs, ys, detected = np.zeros(n), np.zeros(n), np.zeros(n, dtype=bool)
+        frames, axs, ays, adet = [], [], [], []
         prior: tuple[float, float] | None = None
-        processed = 0
         for i in tqdm(range(n), disable=not progress, desc="tracking"):
+            # Track every stride-th frame; skip-decode the rest with grab() (no
+            # full decode), so skipped frames cost almost nothing.
+            if i % stride != 0:
+                if not cap.grab():
+                    break
+                continue
             ret, frame = cap.read()
             if not ret:
                 break
-            loc = locate(preprocess(frame, session), session.reference, params, prior, mask)
-            xs[i], ys[i], detected[i] = loc.x, loc.y, loc.detected
-            prior = (loc.x, loc.y)
-            processed += 1
+            small = downscale(preprocess(frame, session), ds)
+            # locate works in downsampled space; map the prior in and the result
+            # back out by the spatial factor so the caller sees full-res pixels.
+            small_prior = None if prior is None else (prior[0] / ds, prior[1] / ds)
+            loc = locate(small, reference, params, small_prior, mask)
+            x, y = loc.x * ds, loc.y * ds
+            frames.append(session.start + i)
+            axs.append(x)
+            ays.append(y)
+            adet.append(loc.detected)
+            prior = (x, y)
     finally:
         cap.release()
 
-    xs, ys, detected = xs[:processed], ys[:processed], detected[:processed]
-    dist = np.zeros(processed)
-    if processed > 1:
+    xs, ys = np.asarray(axs), np.asarray(ays)
+    dist = np.zeros(xs.size)
+    if xs.size > 1:
         dist[1:] = np.hypot(np.diff(xs), np.diff(ys))
 
     df = pd.DataFrame(
         {
-            "frame": np.arange(session.start, session.start + processed),
+            "frame": np.asarray(frames, dtype=int),
             "x": xs,
             "y": ys,
-            "detected": detected,
+            "detected": np.asarray(adet, dtype=bool),
             "distance_px": dist,
         }
     )
@@ -150,10 +224,74 @@ def track(session: Session, params: TrackParams, progress: bool = True) -> pd.Da
         window=None
         if params.window is None
         else {"size": params.window.size, "weight": params.window.weight},
+        threshold_abs=params.threshold_abs,
+        threshold_on=params.threshold_on,
+        denoise=params.denoise_kernel if params.denoise else None,
+        spatial_downsample=ds,
+        temporal_downsample=stride,
     )
 
     df = _add_rois(df, session)
     return apply_scale(df, session.selections.scale, "distance_px")
+
+
+def hampel_filter(
+    location: pd.DataFrame, session: Session, window: int = 7, sigma: float = 3.0
+) -> pd.DataFrame:
+    """Remove position outliers from a completed track (run *after* :func:`track`).
+
+    Slides a window over the tracked ``x``/``y`` and replaces any point lying more
+    than ``sigma`` scaled-MADs from the local median position with that median --
+    killing the occasional bad-frame jump without smoothing genuine movement.
+    ``distance_px``, the ROI columns, and the scaled distance are all recomputed
+    from the cleaned positions. Returns a new dataframe; the input is unchanged.
+
+    ``window`` is counted in **tracked rows**, not original frames: with
+    ``temporal_downsample=N`` each row is N frames apart, so the window spans
+    ``(2*window+1) * N`` original frames of real time. Spatial downsampling does
+    not affect it (still one row per frame).
+    """
+    if window < 1 or sigma <= 0:
+        raise ValueError(f"window must be >= 1 and sigma > 0, got window={window}, sigma={sigma}")
+
+    df = location.copy()
+    x, y, _ = _hampel_xy(df["x"].to_numpy(), df["y"].to_numpy(), window, sigma)
+    df["x"], df["y"] = x, y
+
+    dist = np.zeros(len(df))
+    if len(df) > 1:
+        dist[1:] = np.hypot(np.diff(df["x"].to_numpy()), np.diff(df["y"].to_numpy()))
+    df["distance_px"] = dist
+
+    df = _add_rois(df, session)
+    return apply_scale(df, session.selections.scale, "distance_px")
+
+
+def _hampel_xy(
+    x: np.ndarray, y: np.ndarray, window: int, sigma: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Joint 2-D Hampel filter on a position track.
+
+    A point is an outlier when its ``(x, y)`` lies more than ``sigma`` scaled-MADs
+    from the **median position** of the ``2*window+1`` frames centered on it, where
+    the spread is the median Euclidean distance of those frames from that median
+    (so it scales with how much the animal is actually moving). Outliers have
+    *both* coordinates replaced by the local median position -- x and y are treated
+    as one point, never filtered independently. Returns ``(x, y, outlier_mask)``.
+    """
+    win = 2 * window + 1
+    pad = np.full(window, np.nan)
+    xw = sliding_window_view(np.concatenate([pad, x, pad]), win)  # (n, win) per-frame windows
+    yw = sliding_window_view(np.concatenate([pad, y, pad]), win)
+
+    mx = np.nanmedian(xw, axis=1)  # local median position
+    my = np.nanmedian(yw, axis=1)
+    spread = np.nanmedian(np.hypot(xw - mx[:, None], yw - my[:, None]), axis=1)
+    mad = 1.4826 * spread
+
+    deviation = np.hypot(x - mx, y - my)  # how far this frame is from its local median
+    outlier = (deviation > sigma * mad) & (mad > 0)
+    return np.where(outlier, mx, x), np.where(outlier, my, y), outlier
 
 
 def _add_rois(df: pd.DataFrame, session: Session) -> pd.DataFrame:

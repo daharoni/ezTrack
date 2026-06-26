@@ -22,7 +22,42 @@ from .viz import image
 
 hv.extension("bokeh")
 
-__all__ = ["crop_tool", "mask_tool", "roi_tool", "distance_tool", "set_scale"]
+__all__ = [
+    "file_chooser",
+    "crop_tool",
+    "mask_tool",
+    "roi_tool",
+    "name_rois",
+    "distance_tool",
+    "set_scale",
+]
+
+# Common behavior-video container formats, used as the default picker filter.
+_VIDEO_PATTERNS = ["*.avi", "*.mp4", "*.wmv", "*.mpg", "*.mpeg", "*.mov", "*.mkv"]
+
+
+def file_chooser(start_dir: str = ".", patterns: list[str] | None = None):
+    """Display an in-notebook file picker and return the ``FileChooser`` widget.
+
+    Browses the kernel's filesystem (so it works the same locally or on a remote
+    Jupyter server, unlike a native ``tkinter`` dialog). After the user picks a
+    file, build a :class:`~eztrack.config.Session` from the selection::
+
+        fc = ez.file_chooser("../../PracticeVideos/")
+        fc                                    # shows the picker
+        # ...pick a file, then in a later cell:
+        session = ez.Session(dpath=fc.selected_path, file=fc.selected_filename)
+
+    ``patterns`` defaults to the common video extensions; pass your own glob list
+    to override. ``ipyfilechooser`` is imported lazily so the headless pipeline
+    never needs it.
+    """
+    from ipyfilechooser import FileChooser
+
+    fc = FileChooser(start_dir)
+    fc.title = "Select a behavior video"
+    fc.filter_pattern = patterns or _VIDEO_PATTERNS
+    return fc
 
 
 def crop_tool(session: Session) -> hv.Element:
@@ -57,18 +92,19 @@ def mask_tool(session: Session) -> hv.Element:
 
 
 def roi_tool(session: Session) -> hv.Element:
-    """Draw the regions named in ``session.region_names``; writes ``selections.rois``."""
+    """Draw regions of interest; writes ``selections.rois``.
+
+    Draw as many regions as you like -- each is labelled live (with the declared
+    ``session.region_names`` if set, otherwise ``zone_1``, ``zone_2`` ...). If
+    ``region_names`` is set it also caps how many regions you can draw. Name (or
+    rename) them afterwards with :func:`name_rois`.
+    """
     names = session.region_names or []
-    img = image(
-        session.reference,
-        session.stretch,
-        "Draw regions: " + ", ".join(names) if names else "No regions to draw",
-        colorbar=True,
-    )
-    if not names:
-        return img
+    title = "Draw regions: " + ", ".join(names) if names else "Draw regions (name them next)"
+    img = image(session.reference, session.stretch, title, colorbar=True)
 
     poly = hv.Polygons([]).opts(fill_alpha=0.3, active_tools=["poly_draw"])
+    # num_objects=0 means unlimited; cap only when names were declared up front.
     stream = streams.PolyDraw(source=poly, drag=True, num_objects=len(names), show_vertices=True)
 
     def _update(data):
@@ -80,6 +116,36 @@ def roi_tool(session: Session) -> hv.Element:
 
     dmap = hv.DynamicMap(_update, streams=[stream])
     return img * poly * dmap
+
+
+def name_rois(session: Session, names: list[str]) -> hv.Element:
+    """Assign names to the regions drawn with :func:`roi_tool`.
+
+    Requires exactly one name per drawn region (raising otherwise), then writes
+    them onto ``session.selections.rois`` and mirrors them to
+    ``session.region_names``. Returns the reference frame with the named regions
+    outlined and labelled, so you can confirm the order is what you intended.
+    """
+    rois = session.selections.rois
+    drawn = len(rois.polygons) if rois else 0
+    if drawn == 0:
+        raise ValueError("No regions drawn yet -- run roi_tool and draw at least one region first.")
+    if len(names) != drawn:
+        raise ValueError(
+            f"You drew {drawn} region(s) but gave {len(names)} name(s); they must match."
+        )
+
+    rois.names = list(names)
+    session.region_names = list(names)
+
+    img = image(session.reference, session.stretch, "Named regions", colorbar=True)
+    polys = hv.Polygons([[(v[0], v[1]) for v in poly] for poly in rois.polygons]).opts(
+        fill_alpha=0.1, line_dash="dashed"
+    )
+    centers_x = [np.mean([v[0] for v in poly]) for poly in rois.polygons]
+    centers_y = [np.mean([v[1] for v in poly]) for poly in rois.polygons]
+    labels = hv.Labels((centers_x, centers_y, rois.names))
+    return img * polys * labels
 
 
 def distance_tool(session: Session) -> hv.Element:

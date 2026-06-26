@@ -107,13 +107,21 @@ class ROIs:
         return bool(self.polygons)
 
     @classmethod
-    def from_polydraw(cls, names: list[str] | None, data: dict | None) -> ROIs:
-        """Build ROIs from declared ``names`` and a ``PolyDraw`` stream's ``.data`` dict.
+    def from_polydraw(
+        cls, names: list[str] | None, data: dict | None, default_prefix: str = "zone"
+    ) -> ROIs:
+        """Build ROIs from (optional) declared ``names`` and a ``PolyDraw`` stream's data.
 
-        Names are matched positionally to drawn polygons.
+        Names are matched positionally to drawn polygons; any polygon without a
+        declared name gets a ``{default_prefix}_{n}`` placeholder, so every drawn
+        region is always named (rename them later via ``name_rois``).
         """
         polygons = _polydraw_polygons(data)
-        names = list(names or [])[: len(polygons)]
+        declared = list(names or [])
+        names = [
+            declared[i] if i < len(declared) else f"{default_prefix}_{i + 1}"
+            for i in range(len(polygons))
+        ]
         return cls(names=names, polygons=polygons)
 
 
@@ -146,18 +154,44 @@ class TrackParams:
     """Parameters controlling the per-frame location estimate (validated)."""
 
     threshold_pct: float = 99.5
+    # Absolute cutoff in intensity units (0-255). When set it *replaces* the
+    # percentile: a pixel counts only if it clears this cutoff. The direction is
+    # decided by ``method`` (dark = darker, light = brighter, abs = either way).
+    # ``None`` = use the percentile.
+    threshold_abs: float | None = None
+    # What ``threshold_abs`` is measured against (ignored when it is ``None``, since
+    # the percentile is always taken on the baseline difference):
+    #   'difference' -- the change from the reference frame (suppresses static
+    #                   scene clutter; the default).
+    #   'raw'        -- the raw pixel value, ignoring the baseline (uniform across
+    #                   the arena, but flags every static object at that brightness;
+    #                   needs method 'dark' or 'light').
+    threshold_on: str = "difference"
     method: str = "abs"  # 'abs' | 'light' | 'dark'
     window: Window | None = field(default_factory=Window)
-    remove_wire: bool = False
-    wire_kernel: int = 5
+    denoise: bool = False  # morphologically open the thresholded mask each frame
+    denoise_kernel: int = 5  # opening kernel size in px; removes features thinner than this
 
     def __post_init__(self) -> None:
         if self.method not in METHODS:
             raise ValueError(f"method must be one of {METHODS}, got {self.method!r}")
         if not 0 <= self.threshold_pct <= 100:
             raise ValueError(f"threshold_pct must be in [0, 100], got {self.threshold_pct}")
+        if self.threshold_abs is not None and self.threshold_abs < 0:
+            raise ValueError(f"threshold_abs must be >= 0, got {self.threshold_abs}")
+        if self.threshold_on not in ("difference", "raw"):
+            raise ValueError(
+                f"threshold_on must be 'difference' or 'raw', got {self.threshold_on!r}"
+            )
+        if self.threshold_on == "raw" and self.method == "abs":
+            raise ValueError(
+                "threshold_on='raw' needs method='dark' or 'light' "
+                "(there is no baseline to take an absolute difference from)"
+            )
         if self.window is not None and not 0 <= self.window.weight <= 1:
             raise ValueError(f"window.weight must be in [0, 1], got {self.window.weight}")
+        if self.denoise and self.denoise_kernel < 1:
+            raise ValueError(f"denoise_kernel must be >= 1, got {self.denoise_kernel}")
 
 
 @dataclass
@@ -227,7 +261,12 @@ class Session:
     file: str | None = None
     start: int = 0
     end: int | None = None
-    downsample: float = 1.0
+    # Speed knobs, expressed as reduction *factors* (1 = no reduction). Both keep
+    # outputs in the original space: spatial=2 tracks at half resolution then maps
+    # positions back to full-res pixels; temporal=2 tracks every other frame then
+    # interpolates positions back to one row per original frame.
+    spatial_downsample: float = 1.0
+    temporal_downsample: int = 1
     region_names: list[str] | None = None
     stretch: Stretch = field(default_factory=Stretch)
     altfile: str | None = None
@@ -235,6 +274,22 @@ class Session:
     selections: Selections = field(default_factory=Selections)
     reference: np.ndarray | None = field(default=None, repr=False)
     file_names: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.spatial_downsample < 1:
+            raise ValueError(
+                "spatial_downsample is a reduction factor >= 1 (2 = half resolution); "
+                f"got {self.spatial_downsample}"
+            )
+        if (
+            self.temporal_downsample < 1
+            or int(self.temporal_downsample) != self.temporal_downsample
+        ):
+            raise ValueError(
+                "temporal_downsample is an integer frame stride >= 1 (2 = every other frame); "
+                f"got {self.temporal_downsample}"
+            )
+        self.temporal_downsample = int(self.temporal_downsample)
 
     @property
     def fpath(self) -> str:

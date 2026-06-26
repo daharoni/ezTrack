@@ -33,7 +33,11 @@ def summarize(
     if bins is None:
         bins = {"all": (int(df["frame"].min()), int(df["frame"].max()))}
 
-    region_cols = [c for c in (session.region_names or []) if c in df.columns]
+    # The actual ROI columns come from the drawn regions' names; fall back to the
+    # declared region_names for the (replayed/headless) case where rois aren't set.
+    rois = session.selections.rois
+    roi_names = (rois.names if rois else None) or session.region_names or []
+    region_cols = [c for c in roi_names if c in df.columns]
     scale = session.selections.scale
     rows = []
     for name, (lo, hi) in bins.items():
