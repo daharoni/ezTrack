@@ -32,16 +32,40 @@ def test_outlier_plot_builds_layout(tracked):
 
 def test_threshold_preview_builds_layout(tracked):
     s, _df = tracked
-    layout = ez.threshold_preview(s, ez.TrackParams(threshold_pct=99, window=None), examples=2)
+    layout = ez.threshold_preview(
+        s, ez.TrackParams(threshold_pct=99, window=None), examples=2, sample=0
+    )
     assert type(layout).__name__ == "Layout"
 
 
-def test_threshold_preview_does_not_hang_on_unreachable_threshold(tracked):
-    """An impossible cutoff must bound its search and still return, not loop forever."""
+def test_threshold_preview_shows_undetected_frames_unbiased(tracked):
+    """With an impossible cutoff every shown frame is undetected -- the preview must
+    surface those failures, not search for the rare success, and still return."""
     s, _df = tracked
-    layout = ez.threshold_preview(s, ez.TrackParams(threshold_abs=1000, window=None), examples=2)
+    layout = ez.threshold_preview(
+        s, ez.TrackParams(threshold_abs=1000, window=None), examples=2, sample=0
+    )
     assert type(layout).__name__ == "Layout"
     assert len(layout) == 4  # 2 examples x (original | difference), shown undetected
+
+
+def test_detection_scan_reports_rate(tracked):
+    """detection_scan returns a consistent isolated-frame detection rate."""
+    s, _df = tracked
+    rate = ez.detection_scan(s, ez.TrackParams(threshold_pct=99, window=None), n=30)
+    assert rate["n_detected"] + rate["n_failed"] == rate["n_frames"]
+    assert 0.0 <= rate["pct_detected"] <= 100.0
+
+    # An unreachable cutoff detects nothing -> 0%.
+    none = ez.detection_scan(s, ez.TrackParams(threshold_abs=1000, window=None), n=10)
+    assert none["pct_detected"] == 0.0
+
+
+def test_threshold_preview_prints_scan(tracked, capsys):
+    """When sample > 0 the preview prints the detection-rate scan above the panels."""
+    s, _df = tracked
+    ez.threshold_preview(s, ez.TrackParams(threshold_pct=99, window=None), examples=1, sample=8)
+    assert "Detection scan" in capsys.readouterr().out
 
 
 def test_marker_track_aligns_by_frame_not_row():

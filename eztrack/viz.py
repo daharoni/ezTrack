@@ -18,7 +18,7 @@ from .video import open_capture, preprocess
 
 hv.extension("bokeh")
 
-__all__ = ["image", "threshold_preview", "trace", "heatmap", "outlier_plot"]
+__all__ = ["image", "threshold_preview", "detection_scan", "trace", "heatmap", "outlier_plot"]
 
 
 def image(arr: np.ndarray, stretch: Stretch | None = None, title: str = "", **opts) -> hv.Image:
@@ -42,20 +42,41 @@ def image(arr: np.ndarray, stretch: Stretch | None = None, title: str = "", **op
 
 
 def threshold_preview(
-    session: Session, params: TrackParams, examples: int = 4, panel_width: int = 320
+    session: Session,
+    params: TrackParams,
+    examples: int = 4,
+    sample: int = 200,
+    panel_width: int = 320,
+    prefer_detected: bool = False,
 ) -> hv.Layout:
     """Show tracking on a few random frames to sanity-check ``params``.
 
-    Each example pairs the original frame with the thresholded difference. It
-    prefers frames where the animal is detected, but if ``params`` detects nothing
-    (e.g. an over-strict ``threshold_abs`` or the wrong ``method``) it stops after a
-    bounded search and shows undetected frames -- titled "nothing above threshold"
-    with no marker -- rather than looping forever. Windowing is not applied (frames
-    are examined in isolation). Panels are laid out two-up (original | difference)
-    and scaled to ``panel_width`` px so high-resolution videos don't overflow.
+    Frames are drawn **at random and shown as-is** -- detected or not -- so you see
+    where ``params`` *fails*, not just where it works. Each example pairs the
+    original frame with the thresholded difference; the detected center of mass is
+    circled when found, and undetected panels are titled "nothing above threshold".
+    Windowing is not applied (frames are examined in isolation). Panels are laid out
+    two-up and scaled to ``panel_width`` px.
+
+    When ``sample > 0`` a quick :func:`detection_scan` over ``sample`` random frames
+    runs first and its success rate is printed, so you get an honest detection-rate
+    number alongside the panels (set ``sample=0`` to skip it while tuning fast).
+
+    ``prefer_detected=True`` biases the *shown* panels toward frames that detected
+    -- handy once params roughly work and you want to inspect good frames -- but it
+    never changes the reported rate. It is ``False`` by default precisely so a
+    low-yield video doesn't hide its failures behind its rare successes.
     """
     if session.reference is None:
         raise ValueError("No reference frame. Call eztrack.reference_frame(session) first.")
+
+    if sample > 0:
+        rate = detection_scan(session, params, n=sample)
+        print(
+            f"Detection scan: animal detected in {rate['n_detected']}/{rate['n_frames']} "
+            f"sampled frames ({rate['pct_detected']}%) — isolated-frame estimate "
+            "(real track() rate differs once windowing biases toward the prior)."
+        )
 
     # Scale each panel to a fixed display width, preserving aspect ratio, so a
     # 1280px-wide frame doesn't render two-across at native size.
@@ -68,8 +89,9 @@ def threshold_preview(
 
         panels = []
         for _ in range(examples):
-            # Look for a detected frame, but cap the attempts so impossible params
-            # can't hang the preview -- fall back to the last frame we could read.
+            # Bounded loop: always retry an *unreadable* frame, but only keep
+            # searching for a *detected* one when prefer_detected is set. Unbiased
+            # by default -> we stop at the first readable frame, success or not.
             loc = frame = frm = None
             for _attempt in range(25):
                 candidate_frm = int(np.random.randint(session.start, end))
@@ -79,7 +101,7 @@ def threshold_preview(
                     continue
                 frm, frame = candidate_frm, candidate
                 loc = locate(preprocess(frame, session), session.reference, params)
-                if loc.detected:
+                if loc.detected or not prefer_detected:
                     break
             if frame is None:
                 continue  # could not read any frame in this video range
@@ -98,6 +120,47 @@ def threshold_preview(
     finally:
         cap.release()
     return hv.Layout(panels).cols(2)
+
+
+def detection_scan(session: Session, params: TrackParams, n: int = 200) -> dict[str, float]:
+    """Quickly estimate how often ``params`` detects the animal, over ``n`` random frames.
+
+    Runs :func:`~eztrack.tracking.locate` on each sampled frame **in isolation** (no
+    windowing, exactly as :func:`threshold_preview` shows them) and returns
+    ``{n_frames, n_detected, n_failed, pct_detected}`` -- a fast parameter sanity
+    check that doesn't need a full :func:`~eztrack.tracking.track`. Unreadable frames
+    are skipped and don't count toward ``n_frames``.
+
+    This is an *isolated-frame* rate; the real ``track()`` rate can differ because
+    tracking biases toward the previous location. Use it to compare parameter sets
+    on a hard video before committing to a full run.
+    """
+    if session.reference is None:
+        raise ValueError("No reference frame. Call eztrack.reference_frame(session) first.")
+
+    cap = open_capture(session.fpath)
+    read = detected = 0
+    try:
+        cap_max = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        end = int(session.end) if session.end is not None else cap_max
+        for _ in range(n):
+            frm = int(np.random.randint(session.start, end))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frm)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            read += 1
+            if locate(preprocess(frame, session), session.reference, params).detected:
+                detected += 1
+    finally:
+        cap.release()
+
+    return {
+        "n_frames": read,
+        "n_detected": detected,
+        "n_failed": read - detected,
+        "pct_detected": round(100 * detected / read, 1) if read else float("nan"),
+    }
 
 
 def _signal_clim(arr: np.ndarray) -> tuple[float, float]:
