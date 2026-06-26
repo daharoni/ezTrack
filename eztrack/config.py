@@ -263,8 +263,10 @@ class Session:
     end: int | None = None
     # Speed knobs, expressed as reduction *factors* (1 = no reduction). Both keep
     # outputs in the original space: spatial=2 tracks at half resolution then maps
-    # positions back to full-res pixels; temporal=2 tracks every other frame then
-    # interpolates positions back to one row per original frame.
+    # positions back to full-res pixels; temporal=2 tracks every other frame and
+    # emits one row per *tracked* frame (skipped frames get no row -- positions are
+    # never invented). The ``frame`` column carries the real frame numbers, so
+    # downstream can resample against real time if it needs to.
     spatial_downsample: float = 1.0
     temporal_downsample: int = 1
     region_names: list[str] | None = None

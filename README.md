@@ -88,15 +88,29 @@ params = ez.TrackParams(threshold_pct=99.5, method="abs", window=ez.Window(100, 
 ez.threshold_preview(session, params)              # sanity-check on random frames
 location = ez.track(session, params)               # -> per-frame DataFrame
 
-# 3. visualize + summarize
+# 3. visualize, save, summarize
 ez.trace(session, location); ez.heatmap(session, location)
+ez.save_tracking(location, "clip_tracking.csv")   # CSV + a .json sidecar of df.attrs
 summary = ez.summarize(location, session, bins=None)
 ```
 
 Output is a tidy per-frame `DataFrame` (`frame, x, y, detected, distance_px`, a scaled
 `distance_<unit>` when a scale is set, plus one boolean column per ROI, an `roi` label and
 an `roi_transition` flag). Run parameters and ROI geometry live in `df.attrs`, not repeated
-in every row.
+in every row — so save with `ez.save_tracking` (which writes a JSON sidecar of `df.attrs`)
+rather than a bare `df.to_csv`, which would drop that provenance.
+
+`distance_px` is the path length counted **only between consecutive detected frames**: a
+step into or out of a failed frame (`detected == False`, where the previous position was
+carried forward) contributes 0 rather than a spurious freeze-then-jump. Distance is thus an
+honest *measured* path length, and a low detection rate under-counts it — `track()` warns
+when the animal is detected in under 90% of frames, and `summarize` / `ez.detection_rate`
+report `pct_detected`.
+
+**Timing is intentionally left to downstream.** ezTrack never infers time from the video's
+frame rate. The `frame` column is the join key: merge the output against your per-frame
+timestamp file (e.g. `timestamps.csv` / `timestamps.dat` in the recording directory) to put
+the track on a real-time axis and derive speeds.
 
 ## Architecture
 

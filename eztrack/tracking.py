@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
 from dataclasses import dataclass
 
 import cv2
@@ -19,12 +20,16 @@ import pandas as pd
 from numpy.lib.stride_tricks import sliding_window_view
 from tqdm.auto import tqdm
 
-from .analyze import apply_scale
+from .analyze import apply_scale, detection_rate
 from .config import Session, TrackParams
 from .regions import linearize, mask_array, roi_membership, transitions
 from .video import downscale, open_capture, preprocess
 
 __all__ = ["Located", "locate", "track", "hampel_filter", "save_tracking", "load_tracking"]
+
+# track() warns when fewer than this percent of frames actually detected the
+# animal -- a quiet low-detection track silently under-measures distance.
+LOW_DETECTION_WARN_PCT = 90.0
 
 
 @dataclass
@@ -157,6 +162,12 @@ def track(session: Session, params: TrackParams, progress: bool = True) -> pd.Da
     one boolean column per ROI, an ``roi`` label, and an ``roi_transition`` flag
     when ROIs are present. Run parameters live in ``df.attrs``, not in every row.
 
+    ``distance_px`` is counted only between consecutive *detected* frames (see
+    :func:`_step_distance`); a low overall detection rate therefore under-counts
+    distance and triggers a warning. Timing is intentionally left to downstream:
+    the ``frame`` column is the join key against a per-frame timestamp file
+    (e.g. ``timestamps.csv``) -- ezTrack never infers time from the video's fps.
+
     ``session.spatial_downsample`` and ``session.temporal_downsample`` (both
     reduction factors, 1 = none) only speed things up; outputs stay in the video's
     **original** space. Spatial tracking happens on a shrunken frame with positions
@@ -207,20 +218,17 @@ def track(session: Session, params: TrackParams, progress: bool = True) -> pd.Da
     finally:
         cap.release()
 
-    xs, ys = np.asarray(axs), np.asarray(ays)
-    dist = np.zeros(xs.size)
-    if xs.size > 1:
-        dist[1:] = np.hypot(np.diff(xs), np.diff(ys))
-
+    xs, ys, detected = np.asarray(axs), np.asarray(ays), np.asarray(adet, dtype=bool)
     df = pd.DataFrame(
         {
             "frame": np.asarray(frames, dtype=int),
             "x": xs,
             "y": ys,
-            "detected": np.asarray(adet, dtype=bool),
-            "distance_px": dist,
+            "detected": detected,
+            "distance_px": _step_distance(xs, ys, detected),
         }
     )
+    _warn_if_low_detection(df)
     df.attrs.update(
         file=session.file,
         start=session.start,
@@ -238,6 +246,36 @@ def track(session: Session, params: TrackParams, progress: bool = True) -> pd.Da
 
     df = _add_rois(df, session)
     return apply_scale(df, session.selections.scale, "distance_px")
+
+
+def _step_distance(xs: np.ndarray, ys: np.ndarray, detected: np.ndarray) -> np.ndarray:
+    """Per-frame travelled distance, counted only between two *detected* frames.
+
+    A step is the move from the previous row to this one. When either end is a
+    failed frame (``detected`` False) the position there was carried forward, not
+    measured, so the step is unknown -- we record 0 rather than the spurious
+    freeze-then-jump it would otherwise produce. Distance is therefore an honest
+    *measured* path length; pair it with the detection rate to see how much of the
+    track it covers. (Filling the gaps is deliberately left to downstream code.)
+    """
+    dist = np.zeros(xs.size)
+    if xs.size > 1:
+        step = np.hypot(np.diff(xs), np.diff(ys))
+        both_detected = detected[1:] & detected[:-1]
+        dist[1:] = np.where(both_detected, step, 0.0)
+    return dist
+
+
+def _warn_if_low_detection(df: pd.DataFrame) -> None:
+    """Emit a warning when the animal was detected in too few frames to trust."""
+    pct = detection_rate(df)["pct_detected"]
+    if pct < LOW_DETECTION_WARN_PCT:
+        warnings.warn(
+            f"Animal detected in only {pct}% of frames "
+            f"(< {LOW_DETECTION_WARN_PCT}%). Distance is measured between detected "
+            "frames only, so it under-counts here; review threshold_preview / params.",
+            stacklevel=3,
+        )
 
 
 def _json_default(obj):
@@ -304,10 +342,8 @@ def hampel_filter(
     x, y, _ = _hampel_xy(df["x"].to_numpy(), df["y"].to_numpy(), window, sigma)
     df["x"], df["y"] = x, y
 
-    dist = np.zeros(len(df))
-    if len(df) > 1:
-        dist[1:] = np.hypot(np.diff(df["x"].to_numpy()), np.diff(df["y"].to_numpy()))
-    df["distance_px"] = dist
+    detected = df["detected"].to_numpy() if "detected" in df.columns else np.ones(len(df), bool)
+    df["distance_px"] = _step_distance(x, y, detected)
 
     df = _add_rois(df, session)
     return apply_scale(df, session.selections.scale, "distance_px")
