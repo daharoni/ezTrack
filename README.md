@@ -55,8 +55,9 @@ eztrack notebooks copy batch           # batch-processing notebook
 ```
 
 Then launch Jupyter and open the copied notebook (`jupyter notebook`). If you cloned the
-repo you can also open them in place under `eztrack/notebooks/`. The `individual` notebook
-defaults to the sample clip in `PracticeVideos/`.
+repo you can also open them in place under `eztrack/notebooks/`. The file picker opens in
+the working directory — browse to your video (or the bundled `PracticeVideos/` clip if you
+cloned the repo).
 
 # The pipeline
 
