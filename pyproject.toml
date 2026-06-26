@@ -20,6 +20,9 @@ dependencies = [
     # JupyterLab / VS Code (Panel renders Bokeh through the ipywidgets comm).
     "ipywidgets>=8",
     "jupyter-bokeh>=4",
+    # In-notebook video file picker (ez.file_chooser); browses the kernel's
+    # filesystem so it works on local and remote Jupyter alike.
+    "ipyfilechooser>=0.6",
 ]
 
 requires-python = ">=3.10"

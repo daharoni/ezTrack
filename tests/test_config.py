@@ -41,6 +41,17 @@ def test_polydraw_conversion_for_mask_and_rois():
     assert len(rois.polygons) == 1
 
 
+def test_polydraw_rois_default_names_for_undeclared_polygons():
+    # three polygons drawn, no names declared -> all get zone_N placeholders
+    data = {"xs": [[0, 1, 1]] * 3, "ys": [[0, 0, 1]] * 3}
+    rois = ROIs.from_polydraw(None, data)
+    assert rois.names == ["zone_1", "zone_2", "zone_3"]
+
+    # partial names -> declared ones kept, the rest filled in positionally
+    rois = ROIs.from_polydraw(["left"], data)
+    assert rois.names == ["left", "zone_2", "zone_3"]
+
+
 def test_scale_factor():
     assert Scale().factor is None
     assert Scale(px_distance=10, real_distance=50, unit="cm").factor == 5.0
@@ -55,6 +66,20 @@ def test_trackparams_validation_rejects_bad_input(bad):
 def test_trackparams_rejects_bad_window_weight():
     with pytest.raises(ValueError):
         TrackParams(window=Window(size=50, weight=2.0))
+
+
+def test_session_downsample_factor_validation():
+    from eztrack import Session
+
+    # factors are reductions >= 1 (2 = 2x), so sub-1 spatial and non-int temporal are errors
+    with pytest.raises(ValueError, match="spatial_downsample"):
+        Session(dpath=".", spatial_downsample=0.5)
+    with pytest.raises(ValueError, match="temporal_downsample"):
+        Session(dpath=".", temporal_downsample=0)
+    with pytest.raises(ValueError, match="temporal_downsample"):
+        Session(dpath=".", temporal_downsample=2.5)
+    # valid factors are accepted (temporal coerced to int)
+    assert Session(dpath=".", spatial_downsample=2, temporal_downsample=3).temporal_downsample == 3
 
 
 def test_selections_roundtrip_in_memory():

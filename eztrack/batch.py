@@ -14,7 +14,7 @@ import pandas as pd
 
 from .analyze import summarize
 from .config import Session, TrackParams
-from .tracking import track
+from .tracking import hampel_filter, track
 from .video import check_decodable, reference_frame
 from .viz import heatmap, trace
 
@@ -29,12 +29,15 @@ def batch_process(
     bins: dict[str, tuple[int, int]] | None = None,
     num_frames: int = 50,
     check: bool = True,
+    hampel: tuple[int, float] | None = None,
 ) -> tuple[pd.DataFrame, hv.Layout]:
     """Track every file in ``session.file_names`` with the one shared config.
 
     Writes ``<video>_tracking.csv`` per file and a combined ``BatchSummary.csv``
     in ``session.dpath``. Returns the combined summary and a HoloViews layout of
-    each video's trace and heatmap.
+    each video's trace and heatmap. Pass ``hampel=(window, sigma)`` to clean
+    position outliers from every track before summarizing (the batch has no
+    interactive per-file review, so it is opt-in here rather than a separate step).
     """
     summaries, panels = [], []
     for file in session.file_names:
@@ -45,6 +48,8 @@ def batch_process(
         reference_frame(session, num_frames=num_frames)
 
         df = track(session, params)
+        if hampel is not None:
+            df = hampel_filter(df, session, window=hampel[0], sigma=hampel[1])
         df.to_csv(os.path.splitext(session.fpath)[0] + "_tracking.csv", index=False)
         summaries.append(summarize(df, session, bins=bins))
 

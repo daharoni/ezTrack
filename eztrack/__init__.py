@@ -55,6 +55,7 @@ _LAZY = {
     # tracking
     "track": "tracking",
     "locate": "tracking",
+    "hampel_filter": "tracking",
     # analyze
     "summarize": "analyze",
     "apply_scale": "analyze",
@@ -62,9 +63,11 @@ _LAZY = {
     "roi_membership": "regions",
     "mask_array": "regions",
     # interactive
+    "file_chooser": "interactive",
     "crop_tool": "interactive",
     "mask_tool": "interactive",
     "roi_tool": "interactive",
+    "name_rois": "interactive",
     "distance_tool": "interactive",
     "set_scale": "interactive",
     # viz
@@ -72,6 +75,7 @@ _LAZY = {
     "trace": "viz",
     "heatmap": "viz",
     "threshold_preview": "viz",
+    "outlier_plot": "viz",
     # playback
     "play_inline": "playback",
     "play_window": "playback",
