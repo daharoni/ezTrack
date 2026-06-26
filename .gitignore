@@ -22,7 +22,9 @@ htmlcov/
 
 # ezTrack analysis outputs written next to videos / in the working dir
 *_tracking.csv
+*_tracking.json
 LocationOutput.csv
+LocationOutput.json
 BatchSummary.csv
 selections.json
 video_output.avi

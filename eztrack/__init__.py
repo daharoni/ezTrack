@@ -78,6 +78,7 @@ _LAZY = {
     "trace": "viz",
     "heatmap": "viz",
     "threshold_preview": "viz",
+    "detection_scan": "viz",
     "outlier_plot": "viz",
     # playback
     "play_inline": "playback",
