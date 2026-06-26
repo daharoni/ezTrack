@@ -7,7 +7,7 @@ import pandas as pd
 
 from .config import Scale, Session
 
-__all__ = ["apply_scale", "summarize"]
+__all__ = ["apply_scale", "summarize", "detection_rate"]
 
 
 def apply_scale(df: pd.DataFrame, scale: Scale | None, column: str) -> pd.DataFrame:
@@ -50,8 +50,28 @@ def summarize(
         }
         if scale is not None and scale.factor is not None:
             row[f"distance_{scale.unit}"] = window["distance_px"].sum() * scale.factor
+        row.update(detection_rate(window))
         for col in region_cols:
             row[f"prop_{col}"] = window[col].mean() if len(window) else np.nan
         rows.append(row)
 
     return pd.DataFrame(rows)
+
+
+def detection_rate(df: pd.DataFrame) -> dict[str, float]:
+    """Frame counts and the percentage of frames the animal was actually detected.
+
+    A failed frame (``detected`` is False) holds the previous position rather than
+    a fresh estimate, so a low detection rate means much of the track is carried-
+    forward rather than measured. Returns ``n_frames``, ``n_detected``,
+    ``n_failed`` and ``pct_detected`` -- handy to print per video in the notebook
+    and folded into every :func:`summarize` bin.
+    """
+    n = len(df)
+    detected = int(df["detected"].sum()) if "detected" in df.columns else n
+    return {
+        "n_frames": n,
+        "n_detected": detected,
+        "n_failed": n - detected,
+        "pct_detected": round(100 * detected / n, 1) if n else float("nan"),
+    }

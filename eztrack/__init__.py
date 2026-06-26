@@ -56,9 +56,12 @@ _LAZY = {
     "track": "tracking",
     "locate": "tracking",
     "hampel_filter": "tracking",
+    "save_tracking": "tracking",
+    "load_tracking": "tracking",
     # analyze
     "summarize": "analyze",
     "apply_scale": "analyze",
+    "detection_rate": "analyze",
     # regions
     "roi_membership": "regions",
     "mask_array": "regions",

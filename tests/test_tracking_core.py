@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 from conftest import draw_square
@@ -83,14 +85,29 @@ def test_denoise_drops_speck_keeps_animal():
     assert loc.y == pytest.approx(40, abs=1.0)
 
 
-def test_denoise_reverts_when_it_would_erase_everything():
-    """If opening with a big kernel nukes the whole mask, locate keeps the un-opened mask."""
+def test_denoise_fails_frame_when_it_would_erase_everything():
+    """A kernel larger than the animal erases the whole mask -> the frame is reported
+    not-detected, rather than reverting to the un-opened (noisy) mask."""
     ref = np.zeros((80, 120), dtype=np.uint8)
     frame = _frame_with_blob(70, 40, side=4)  # small blob, smaller than the kernel
     params = TrackParams(threshold_pct=99, window=None, denoise=True, denoise_kernel=15)
     loc = locate(frame, ref, params)
-    assert loc.detected  # not lost to over-aggressive denoising
-    assert loc.x == pytest.approx(70, abs=1.5)
+    assert not loc.detected  # over-aggressive denoise drops the frame, no specks resurrected
+    assert loc.dif.max() == 0  # mask left empty, not reverted to the original
+
+
+def test_denoise_is_monotonic_in_kernel():
+    """Increasing the kernel must never resurrect specks: a kernel past the animal's
+    size empties the mask instead of falling back to the noisy one."""
+    ref = np.zeros((80, 120), dtype=np.uint8)
+    frame = _frame_with_blob(70, 40, side=7)  # 7px animal
+    frame[10, 10] = 255  # a lone speck
+    params = TrackParams(threshold_pct=99, window=None, denoise=True)
+
+    kept = locate(frame, ref, replace(params, denoise_kernel=3))
+    erased = locate(frame, ref, replace(params, denoise_kernel=11))
+    assert kept.detected and kept.x == pytest.approx(70, abs=1.0)  # speck removed, animal kept
+    assert not erased.detected  # bigger kernel empties the mask, never brings the speck back
 
 
 def test_threshold_abs_keeps_only_changes_above_cutoff():

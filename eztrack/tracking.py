@@ -9,6 +9,8 @@ the plain config objects, so the whole pipeline runs and is tested headlessly.
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass
 
 import cv2
@@ -22,7 +24,7 @@ from .config import Session, TrackParams
 from .regions import linearize, mask_array, roi_membership, transitions
 from .video import downscale, open_capture, preprocess
 
-__all__ = ["Located", "locate", "track", "hampel_filter"]
+__all__ = ["Located", "locate", "track", "hampel_filter", "save_tracking", "load_tracking"]
 
 
 @dataclass
@@ -136,12 +138,15 @@ def _denoise(dif: np.ndarray, kernel: int) -> np.ndarray:
 
     Erosion removes any feature thinner than ``kernel`` px (specks, a thin
     headstage wire); the following dilation grows the survivors back to roughly
-    their original size, so the animal's bulk is preserved. Reverts to the input
-    if the opening would erase everything (better a noisy estimate than none).
+    their original size, so the animal's bulk is preserved. If the kernel is
+    larger than the animal the opening erases everything; the mask is left empty
+    so the frame is reported *not detected* (the prior position is reused). We do
+    not fall back to the un-opened mask -- that would resurrect the very specks
+    the filter removed and let them grab the center of mass, so a larger kernel
+    would paradoxically find *more* noise.
     """
     krn = np.ones((kernel, kernel), np.uint8)
-    opened = cv2.morphologyEx(dif.astype(np.int16), cv2.MORPH_OPEN, krn)
-    return dif if opened.sum() == 0 else opened
+    return cv2.morphologyEx(dif.astype(np.int16), cv2.MORPH_OPEN, krn)
 
 
 def track(session: Session, params: TrackParams, progress: bool = True) -> pd.DataFrame:
@@ -233,6 +238,47 @@ def track(session: Session, params: TrackParams, progress: bool = True) -> pd.Da
 
     df = _add_rois(df, session)
     return apply_scale(df, session.selections.scale, "distance_px")
+
+
+def _json_default(obj):
+    """Make the numpy values that live in ``df.attrs`` JSON-serializable."""
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.generic):
+        return obj.item()
+    return str(obj)
+
+
+def save_tracking(df: pd.DataFrame, csv_path: str) -> str:
+    """Write a track to ``csv_path`` plus a ``.json`` sidecar of its run metadata.
+
+    ``DataFrame.to_csv`` keeps only the per-frame columns, so the provenance
+    :func:`track` records in ``df.attrs`` (the parameters, the ROI polygons, the
+    down-sampling factors) would be silently dropped -- leaving a CSV you can no
+    longer reproduce or even interpret. This writes that metadata alongside the
+    CSV as ``<name>.json`` so a saved track is self-describing. Returns the
+    sidecar path; read both back together with :func:`load_tracking`.
+    """
+    df.to_csv(csv_path, index=False)
+    meta_path = os.path.splitext(csv_path)[0] + ".json"
+    with open(meta_path, "w") as fh:
+        json.dump(dict(df.attrs), fh, indent=2, default=_json_default)
+    return meta_path
+
+
+def load_tracking(csv_path: str) -> pd.DataFrame:
+    """Read a track written by :func:`save_tracking`, restoring ``df.attrs``.
+
+    Reads the per-frame CSV and merges its ``.json`` sidecar (when present) back
+    into ``df.attrs``, so the loaded frame carries the same run metadata it had in
+    memory. Returns the dataframe unchanged if no sidecar is found.
+    """
+    df = pd.read_csv(csv_path)
+    meta_path = os.path.splitext(csv_path)[0] + ".json"
+    if os.path.exists(meta_path):
+        with open(meta_path) as fh:
+            df.attrs.update(json.load(fh))
+    return df
 
 
 def hampel_filter(

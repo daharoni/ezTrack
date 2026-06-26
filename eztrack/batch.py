@@ -14,7 +14,7 @@ import pandas as pd
 
 from .analyze import summarize
 from .config import Session, TrackParams
-from .tracking import hampel_filter, track
+from .tracking import hampel_filter, save_tracking, track
 from .video import check_decodable, reference_frame
 from .viz import heatmap, trace
 
@@ -50,7 +50,7 @@ def batch_process(
         df = track(session, params)
         if hampel is not None:
             df = hampel_filter(df, session, window=hampel[0], sigma=hampel[1])
-        df.to_csv(os.path.splitext(session.fpath)[0] + "_tracking.csv", index=False)
+        save_tracking(df, os.path.splitext(session.fpath)[0] + "_tracking.csv")
         summaries.append(summarize(df, session, bins=bins))
 
         panels.extend([trace(session, df).opts(title=file), heatmap(session, df).opts(title=file)])

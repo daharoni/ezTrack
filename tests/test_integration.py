@@ -203,3 +203,38 @@ def test_summarize_whole_session_and_bins(synthetic_video):
     binned = ez.summarize(df, s, bins={"early": (0, mid), "late": (mid + 1, 999)})
     assert list(binned["bin"]) == ["early", "late"]
     assert binned["prop_left"].iloc[0] > binned["prop_left"].iloc[1]  # left early, right late
+
+
+def test_save_tracking_round_trips_data_and_metadata(synthetic_video, tmp_path):
+    """save_tracking + load_tracking must restore both the per-frame data and the
+    df.attrs metadata that a bare to_csv/read_csv would drop."""
+    s = _session(synthetic_video)
+    s.selections.rois = ez.ROIs(names=["left"], polygons=[[[0, 0], [60, 0], [60, 80], [0, 80]]])
+    s.selections.scale = ez.Scale(px_distance=10.0, real_distance=20.0, unit="cm")
+    ez.reference_frame(s, num_frames=20)
+    df = ez.track(s, ez.TrackParams(threshold_abs=30, method="light", window=None), progress=False)
+
+    csv_path = tmp_path / "vid_tracking.csv"
+    meta_path = ez.save_tracking(df, str(csv_path))
+    assert meta_path.endswith(".json") and (tmp_path / "vid_tracking.json").exists()
+
+    loaded = ez.load_tracking(str(csv_path))
+    pd.testing.assert_frame_equal(loaded, df, check_dtype=False, check_exact=False, atol=1e-6)
+    # Metadata that to_csv alone would have lost survives the round trip.
+    assert loaded.attrs["threshold_abs"] == 30
+    assert loaded.attrs["method"] == "light"
+    assert loaded.attrs["roi_coordinates"]["names"] == ["left"]
+
+
+def test_summarize_reports_detection_rate(synthetic_video):
+    s = _session(synthetic_video)
+    ez.reference_frame(s, num_frames=20)
+    df = ez.track(s, ez.TrackParams(threshold_pct=99, window=None), progress=False)
+
+    whole = ez.summarize(df, s).iloc[0]
+    assert whole["n_frames"] == len(df)
+    assert whole["n_detected"] + whole["n_failed"] == len(df)
+    assert 0.0 <= whole["pct_detected"] <= 100.0
+
+    rate = ez.detection_rate(df)
+    assert rate["n_detected"] == int(df["detected"].sum())
