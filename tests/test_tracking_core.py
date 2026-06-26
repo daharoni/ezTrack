@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import replace
 
 import numpy as np
@@ -9,7 +10,7 @@ import pytest
 from conftest import draw_square
 
 from eztrack import TrackParams, Window
-from eztrack.tracking import locate
+from eztrack.tracking import _step_distance, _warn_if_low_detection, locate
 
 
 def _frame_with_blob(cx, cy, value=255, shape=(80, 120), side=12):
@@ -195,3 +196,32 @@ def test_center_of_mass_matches_scipy():
     assert fx == pytest.approx(cx, abs=1e-6)
     assert fy == pytest.approx(cy, abs=1e-6)
     assert _center_of_mass(np.zeros((5, 5))) is None  # nothing survives -> None
+
+
+def test_step_distance_ignores_undetected_frames():
+    """A step into or out of a failed frame counts 0, not the freeze-then-jump."""
+    xs = np.array([0.0, 0.0, 0.0, 30.0, 33.0])  # frozen at 0, then a jump on recovery
+    ys = np.zeros(5)
+    detected = np.array([True, False, False, True, True])
+
+    dist = _step_distance(xs, ys, detected)
+    # frozen steps (into/out of undetected) -> 0; only the 30->33 detected-to-detected move counts.
+    np.testing.assert_allclose(dist, [0.0, 0.0, 0.0, 0.0, 3.0])
+
+    # All detected -> ordinary consecutive distances.
+    alld = np.array([True, True, True, True, True])
+    np.testing.assert_allclose(_step_distance(xs, ys, alld), [0.0, 0.0, 0.0, 30.0, 3.0])
+
+
+def test_low_detection_emits_warning():
+    """track() (via this helper) warns when detection falls below the threshold."""
+    import pandas as pd
+
+    low = pd.DataFrame({"detected": [True] + [False] * 9})  # 10% detected
+    with pytest.warns(UserWarning, match="detected in only"):
+        _warn_if_low_detection(low)
+
+    high = pd.DataFrame({"detected": [True] * 10})  # 100% detected -> silent
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any warning would fail the test
+        _warn_if_low_detection(high)
